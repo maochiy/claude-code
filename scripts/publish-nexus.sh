@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 REGISTRY="${NEXUS_NPM_REGISTRY:-https://test-ai.xiujiadian.com/zhuxiangwei-macmini-nexus/repository/npm-hosted/}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_FILE="${1:-}"
 USE_EXISTING_AUTH="${NEXUS_USE_EXISTING_AUTH:-0}"
 PACK_CREATED=0
@@ -21,6 +23,7 @@ fail() {
 }
 
 command -v npm >/dev/null 2>&1 || fail "未找到 npm，请先在服务器安装 Node.js/npm"
+cd "$PROJECT_ROOT"
 
 if [[ -z "$PACKAGE_FILE" ]]; then
   shopt -s nullglob
