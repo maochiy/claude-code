@@ -17,11 +17,11 @@ import { getOpenAIClient } from './client.js'
 import { updateOpenAIUsage } from './openaiShared.js'
 import {
   anthropicMessagesToOpenAI,
-  resolveOpenAIModel,
   adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
 } from '@ant/model-provider'
+import { resolveProviderModelId } from '../../../utils/model/providerModel.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
 import {
   adaptResponsesStreamToAnthropic,
@@ -223,7 +223,7 @@ export async function* queryModelOpenAI(
 > {
   try {
     // 1. Resolve model name
-    const openaiModel = resolveOpenAIModel(options.model)
+    const openaiModel = resolveProviderModelId(options.model, 'openai')
 
     // 2. Normalize messages using shared preprocessing
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)

@@ -54,7 +54,18 @@ const result = Bun.spawnSync(
     cliPath,
     ...process.argv.slice(2),
   ],
-  { stdio: ['inherit', 'inherit', 'inherit'], cwd: projectRoot },
+  {
+    stdio: ['inherit', 'inherit', 'inherit'],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      // Keep the model-catalog refactor isolated from the developer's real
+      // ~/.claude/settings.json until the new /login flow is verified.
+      CLAUDE_CODE_USER_SETTINGS_FILE:
+        process.env.CLAUDE_CODE_USER_SETTINGS_FILE ??
+        'settings-models-v2-test.json',
+    },
+  },
 )
 
 process.exit(result.exitCode ?? 0)

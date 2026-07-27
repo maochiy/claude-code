@@ -30,12 +30,12 @@ import {
 import { streamGeminiGenerateContent } from './client.js'
 import {
   anthropicMessagesToGemini,
-  resolveGeminiModel,
   adaptGeminiStreamToAnthropic,
   anthropicToolsToGemini,
   anthropicToolChoiceToGemini,
   GEMINI_THOUGHT_SIGNATURE_FIELD,
 } from '@ant/model-provider'
+import { resolveProviderModelId } from '../../../utils/model/providerModel.js'
 
 export async function* queryModelGemini(
   messages: Message[],
@@ -49,7 +49,7 @@ export async function* queryModelGemini(
   void
 > {
   try {
-    const geminiModel = resolveGeminiModel(options.model)
+    const geminiModel = resolveProviderModelId(options.model, 'gemini')
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
 
     const toolSchemas = await Promise.all(

@@ -262,6 +262,10 @@ export function getSettingsRootPathForSource(source: SettingSource): string {
  * 3. Default: 'settings.json'
  */
 function getUserSettingsFilePath(): string {
+  const override = process.env.CLAUDE_CODE_USER_SETTINGS_FILE
+  if (override) {
+    return override
+  }
   if (
     getUseCoworkPlugins() ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_COWORK_PLUGINS)

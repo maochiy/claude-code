@@ -38,6 +38,7 @@ import {
   CHATGPT_CODEX_MODEL_OPTIONS,
   isChatGPTAuthMode,
 } from './chatgptModels.js'
+import { getConfiguredModels } from './configuredModels.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -381,6 +382,32 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
 
   if (getAPIProvider() === 'openai' && isChatGPTAuthMode()) {
     return getChatGPTCodexModelOptions()
+  }
+
+  const configuredModels = getConfiguredModels()
+  if (configuredModels.length > 0) {
+    return configuredModels.map(model => ({
+      value: model.id,
+      label: model.name ?? model.id,
+      description:
+        model.description ??
+        ([
+          model.contextWindow
+            ? `${model.contextWindow.toLocaleString()} context`
+            : undefined,
+          model.effortLevels === undefined
+            ? undefined
+            : model.effortLevels.length === 0
+              ? 'No effort parameter'
+              : `Effort: ${model.effortLevels.join(', ')}`,
+        ]
+          .filter(Boolean)
+          .join(' · ') ||
+          model.id),
+      descriptionForModel: model.description
+        ? `${model.description} (${model.id})`
+        : model.id,
+    }))
   }
 
   if (isClaudeAISubscriber()) {

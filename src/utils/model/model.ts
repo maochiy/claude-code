@@ -34,15 +34,34 @@ import {
   CHATGPT_CODEX_FAST_MODEL,
   isChatGPTAuthMode,
 } from './chatgptModels.js'
+import {
+  getConfiguredDefaultModelId,
+  getConfiguredModel,
+  hasConfiguredModelCatalog,
+} from './configuredModels.js'
 
 export type ModelShortName = string
 export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
+function getActiveConfiguredModelId(): string | undefined {
+  if (!hasConfiguredModelCatalog()) return undefined
+  const override = getMainLoopModelOverride()
+  if (typeof override === 'string') {
+    const configuredOverride = getConfiguredModel(override)
+    if (configuredOverride) return configuredOverride.id
+  }
+  return getConfiguredDefaultModelId()
+}
+
 export function getSmallFastModel(): ModelName {
   const provider = getAPIProvider()
   if (provider === 'openai' && isChatGPTAuthMode()) {
     return process.env.OPENAI_SMALL_FAST_MODEL ?? CHATGPT_CODEX_FAST_MODEL
+  }
+  const configuredDefault = getActiveConfiguredModelId()
+  if (configuredDefault) {
+    return configuredDefault
   }
   // Provider-specific small fast model
   if (provider === 'openai' && process.env.OPENAI_SMALL_FAST_MODEL) {
@@ -139,6 +158,10 @@ export function getDefaultOpusModel(): ModelName {
   if (provider === 'openai' && isChatGPTAuthMode()) {
     return CHATGPT_CODEX_DEFAULT_MODEL
   }
+  const configuredDefault = getActiveConfiguredModelId()
+  if (configuredDefault) {
+    return configuredDefault
+  }
   // For OpenAI provider, check OPENAI_DEFAULT_OPUS_MODEL first
   if (provider === 'openai' && process.env.OPENAI_DEFAULT_OPUS_MODEL) {
     return process.env.OPENAI_DEFAULT_OPUS_MODEL
@@ -169,6 +192,10 @@ export function getDefaultSonnetModel(): ModelName {
   if (provider === 'openai' && isChatGPTAuthMode()) {
     return CHATGPT_CODEX_DEFAULT_MODEL
   }
+  const configuredDefault = getActiveConfiguredModelId()
+  if (configuredDefault) {
+    return configuredDefault
+  }
   // For OpenAI provider, check OPENAI_DEFAULT_SONNET_MODEL first
   if (provider === 'openai' && process.env.OPENAI_DEFAULT_SONNET_MODEL) {
     return process.env.OPENAI_DEFAULT_SONNET_MODEL
@@ -197,6 +224,10 @@ export function getDefaultHaikuModel(): ModelName {
   const provider = getAPIProvider()
   if (provider === 'openai' && isChatGPTAuthMode()) {
     return CHATGPT_CODEX_FAST_MODEL
+  }
+  const configuredDefault = getActiveConfiguredModelId()
+  if (configuredDefault) {
+    return configuredDefault
   }
   // For OpenAI provider, check OPENAI_DEFAULT_HAIKU_MODEL first
   if (provider === 'openai' && process.env.OPENAI_DEFAULT_HAIKU_MODEL) {
@@ -258,6 +289,11 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  const configuredDefault = getActiveConfiguredModelId()
+  if (configuredDefault) {
+    return configuredDefault
+  }
+
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
   if (process.env.USER_TYPE === 'ant') {
     return (
@@ -536,6 +572,12 @@ export function parseUserSpecifiedModel(
   modelInput: ModelName | ModelAlias,
 ): ModelName {
   const modelInputTrimmed = modelInput.trim()
+  if (hasConfiguredModelCatalog()) {
+    const configuredModel = getConfiguredModel(modelInputTrimmed)
+    if (configuredModel) {
+      return configuredModel.id
+    }
+  }
   const normalizedModel = modelInputTrimmed.toLowerCase()
 
   const has1mTag = has1mContext(normalizedModel)

@@ -62,6 +62,12 @@ describe('resolveOpenAIModel', () => {
     expect(resolveOpenAIModel('some-random-model')).toBe('some-random-model')
   })
 
+  test('does not infer a family from a custom model ID substring', () => {
+    expect(resolveOpenAIModel('my-opus-compatible-model')).toBe(
+      'my-opus-compatible-model',
+    )
+  })
+
   test('strips [1m] suffix', () => {
     expect(resolveOpenAIModel('claude-sonnet-4-6[1m]')).toBe('gpt-4o')
   })

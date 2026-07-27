@@ -22,7 +22,13 @@ import { openBrowser } from '../utils/browser.js';
 import { logError } from '../utils/log.js';
 import { getSettings_DEPRECATED, updateSettingsForSource } from '../utils/settings/settings.js';
 import { CHINA_LLM_PROVIDERS, type ProviderPreset, resolveChinaProviderBaseURL } from 'src/utils/chinaLlmProviders.js';
+import {
+  getInitialConfiguredModels,
+  resolveConfiguredDefaultModelId,
+  type ConfigurableProvider,
+} from '../utils/model/configuredModels.js';
 import { Select } from './CustomSelect/select.js';
+import { ConfiguredProviderSetup } from './login/ConfiguredProviderSetup.js';
 import { Spinner } from './Spinner.js';
 import TextInput from './TextInput.js';
 
@@ -36,6 +42,9 @@ type Props = {
 type OAuthStatus =
   | { state: 'idle' } // Initial state, waiting to select login method
   | { state: 'platform_setup' } // Show platform setup info (Bedrock/Vertex/Foundry)
+  | { state: 'custom_platform_models' }
+  | { state: 'openai_chat_api_models' }
+  | { state: 'gemini_api_models' }
   | {
       state: 'custom_platform';
       baseUrl: string;
@@ -84,6 +93,17 @@ type OAuthStatus =
     };
 
 const PASTE_HERE_MSG = 'Paste code here if prompted > ';
+
+function applyEnvironmentPatch(env: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
 export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
@@ -278,10 +298,12 @@ export function ConsoleOAuthFlow({
         if (!orgResult.valid) {
           throw new Error((orgResult as { valid: false; message: string }).message);
         }
-        // Reset modelType to anthropic when using OAuth login
-        updateSettingsForSource('userSettings', { modelType: 'anthropic' } as unknown as Parameters<
-          typeof updateSettingsForSource
-        >[1]);
+        // OAuth uses the official catalog, so remove any custom provider model catalog.
+        updateSettingsForSource('userSettings', {
+          modelType: 'anthropic',
+          model: undefined,
+          models: undefined,
+        });
 
         setOAuthStatus({ state: 'success' });
         void sendNotification(
@@ -532,26 +554,10 @@ function OAuthStatusMessage({
               onChange={value => {
                 if (value === 'custom_platform') {
                   logEvent('tengu_custom_platform_selected', {});
-                  setOAuthStatus({
-                    state: 'custom_platform',
-                    baseUrl: process.env.ANTHROPIC_BASE_URL ?? '',
-                    apiKey: process.env.ANTHROPIC_AUTH_TOKEN ?? '',
-                    haikuModel: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? '',
-                    sonnetModel: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? '',
-                    opusModel: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? '',
-                    activeField: 'base_url',
-                  });
+                  setOAuthStatus({ state: 'custom_platform_models' });
                 } else if (value === 'openai_chat_api') {
                   logEvent('tengu_openai_chat_api_selected', {});
-                  setOAuthStatus({
-                    state: 'openai_chat_api',
-                    baseUrl: process.env.OPENAI_BASE_URL ?? '',
-                    apiKey: process.env.OPENAI_API_KEY ?? '',
-                    haikuModel: process.env.OPENAI_DEFAULT_HAIKU_MODEL ?? '',
-                    sonnetModel: process.env.OPENAI_DEFAULT_SONNET_MODEL ?? '',
-                    opusModel: process.env.OPENAI_DEFAULT_OPUS_MODEL ?? '',
-                    activeField: 'base_url',
-                  });
+                  setOAuthStatus({ state: 'openai_chat_api_models' });
                 } else if (value === 'china_providers') {
                   logEvent('tengu_china_providers_selected', {});
                   setOAuthStatus({ state: 'china_provider_select', activeIndex: 0 });
@@ -563,15 +569,7 @@ function OAuthStatusMessage({
                   });
                 } else if (value === 'gemini_api') {
                   logEvent('tengu_gemini_api_selected', {});
-                  setOAuthStatus({
-                    state: 'gemini_api',
-                    baseUrl: process.env.GEMINI_BASE_URL ?? '',
-                    apiKey: process.env.GEMINI_API_KEY ?? '',
-                    haikuModel: process.env.GEMINI_DEFAULT_HAIKU_MODEL ?? '',
-                    sonnetModel: process.env.GEMINI_DEFAULT_SONNET_MODEL ?? '',
-                    opusModel: process.env.GEMINI_DEFAULT_OPUS_MODEL ?? '',
-                    activeField: 'base_url',
-                  });
+                  setOAuthStatus({ state: 'gemini_api_models' });
                 } else if (value === 'platform') {
                   logEvent('tengu_oauth_platform_selected', {});
                   setOAuthStatus({ state: 'platform_setup' });
@@ -590,6 +588,103 @@ function OAuthStatusMessage({
           </Box>
         </Box>
       );
+
+    case 'custom_platform_models':
+    case 'openai_chat_api_models':
+    case 'gemini_api_models': {
+      const provider: ConfigurableProvider =
+        oauthStatus.state === 'openai_chat_api_models'
+          ? 'openai'
+          : oauthStatus.state === 'gemini_api_models'
+            ? 'gemini'
+            : 'anthropic';
+      const currentSettings = getSettings_DEPRECATED() || {};
+      const initialModels = getInitialConfiguredModels(provider, currentSettings);
+      const initialDefaultModelId = resolveConfiguredDefaultModelId(provider, initialModels, currentSettings);
+      const isOpenAI = provider === 'openai';
+      const isGemini = provider === 'gemini';
+      const title = isOpenAI
+        ? 'OpenAI Compatible API Setup'
+        : isGemini
+          ? 'Gemini API Setup'
+          : 'Anthropic Compatible Setup';
+      const description = isOpenAI
+        ? 'Configure an OpenAI Chat Completions compatible endpoint (e.g. Ollama, DeepSeek, vLLM).'
+        : isGemini
+          ? "Configure a Gemini Generate Content compatible endpoint. Base URL is optional and defaults to Google's v1beta API."
+          : 'Configure your own Anthropic-compatible API endpoint.';
+      const initialBaseUrl = isOpenAI
+        ? (process.env.OPENAI_BASE_URL ?? '')
+        : isGemini
+          ? (process.env.GEMINI_BASE_URL ?? '')
+          : (process.env.ANTHROPIC_BASE_URL ?? '');
+      const initialApiKey = isOpenAI
+        ? (process.env.OPENAI_API_KEY ?? '')
+        : isGemini
+          ? (process.env.GEMINI_API_KEY ?? '')
+          : (process.env.ANTHROPIC_AUTH_TOKEN ?? '');
+
+      return (
+        <ConfiguredProviderSetup
+          title={title}
+          description={description}
+          initialBaseUrl={initialBaseUrl}
+          initialApiKey={initialApiKey}
+          initialModels={initialModels}
+          initialDefaultModelId={initialDefaultModelId}
+          onCancel={() => setOAuthStatus({ state: 'idle' })}
+          onSave={({ baseUrl, apiKey, models, defaultModelId }) => {
+            const env: Record<string, string | undefined> = isOpenAI
+              ? {
+                  OPENAI_AUTH_MODE: undefined,
+                  OPENAI_BASE_URL: baseUrl || undefined,
+                  OPENAI_API_KEY: apiKey || undefined,
+                  OPENAI_MODEL: undefined,
+                  OPENAI_DEFAULT_HAIKU_MODEL: undefined,
+                  OPENAI_DEFAULT_SONNET_MODEL: undefined,
+                  OPENAI_DEFAULT_OPUS_MODEL: undefined,
+                }
+              : isGemini
+                ? {
+                    GEMINI_BASE_URL: baseUrl || undefined,
+                    GEMINI_API_KEY: apiKey || undefined,
+                    GEMINI_MODEL: undefined,
+                    GEMINI_DEFAULT_HAIKU_MODEL: undefined,
+                    GEMINI_DEFAULT_SONNET_MODEL: undefined,
+                    GEMINI_DEFAULT_OPUS_MODEL: undefined,
+                  }
+                : {
+                    ANTHROPIC_BASE_URL: baseUrl || undefined,
+                    ANTHROPIC_AUTH_TOKEN: apiKey || undefined,
+                    ANTHROPIC_DEFAULT_HAIKU_MODEL: undefined,
+                    ANTHROPIC_DEFAULT_SONNET_MODEL: undefined,
+                    ANTHROPIC_DEFAULT_OPUS_MODEL: undefined,
+                  };
+            const { error } = updateSettingsForSource('userSettings', {
+              modelType: provider,
+              model: defaultModelId,
+              models,
+              env: env as unknown as Record<string, string>,
+            });
+            if (error) {
+              setOAuthStatus({
+                state: 'error',
+                message: `Failed to save settings: ${error.message}`,
+                toRetry: { state: oauthStatus.state },
+              });
+              return;
+            }
+            applyEnvironmentPatch(env);
+            if (isOpenAI) {
+              clearOpenAIClientCache();
+              void removeChatGPTAuth().catch(() => {});
+            }
+            setOAuthStatus({ state: 'success' });
+            void onDone();
+          }}
+        />
+      );
+    }
 
     case 'custom_platform': {
       type Field = 'base_url' | 'api_key' | 'haiku_model' | 'sonnet_model' | 'opus_model';
@@ -1043,6 +1138,8 @@ function OAuthStatusMessage({
             };
             const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
               modelType: 'openai',
+              model: undefined,
+              models: undefined,
               env,
             };
             const { error } = updateSettingsForSource('userSettings', settingsUpdate);
@@ -1457,12 +1554,15 @@ function OAuthStatusMessage({
           OPENAI_AUTH_MODE: undefined,
           OPENAI_BASE_URL: baseUrl,
           OPENAI_API_KEY: chinaKeyValue.trim(),
-          OPENAI_DEFAULT_SONNET_MODEL: modelId,
-          OPENAI_DEFAULT_HAIKU_MODEL: modelId,
-          OPENAI_DEFAULT_OPUS_MODEL: modelId,
+          OPENAI_MODEL: undefined,
+          OPENAI_DEFAULT_SONNET_MODEL: undefined,
+          OPENAI_DEFAULT_HAIKU_MODEL: undefined,
+          OPENAI_DEFAULT_OPUS_MODEL: undefined,
         };
         const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
           modelType: 'openai',
+          model: modelId,
+          models: [{ id: modelId }],
           env: env as unknown as Record<string, string>,
         };
         const { error } = updateSettingsForSource('userSettings', settingsUpdate);

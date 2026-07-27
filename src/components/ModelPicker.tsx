@@ -33,6 +33,7 @@ import {
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
+import { getConfiguredModel, getConfiguredModels } from '../utils/model/configuredModels.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
@@ -84,6 +85,8 @@ export function ModelPicker({
 
   const handleToggle1M = useCallback(() => {
     if (!focusedValue || focusedValue === NO_PREFERENCE) return;
+    const resolved = resolveOptionModel(focusedValue);
+    if (resolved && getConfiguredModel(resolved)) return;
     // Key on the base value so lookups in handleSelect / is1MMarked match the
     // initializer — predefined 1M options arrive with a `[1m]` suffix in
     // `focusedValue`, which would diverge from the base-value key set.
@@ -107,6 +110,7 @@ export function ModelPicker({
 
   // Memoize all derived values to prevent re-renders
   const modelOptions = useMemo(() => getModelOptions(isFastMode ?? false), [isFastMode]);
+  const usesConfiguredCatalog = useMemo(() => getConfiguredModels().length > 0, []);
 
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
@@ -149,17 +153,25 @@ export function ModelPicker({
   const focusedSupportsEffort = focusedModel ? modelSupportsEffort(focusedModel) : false;
   const focusedSupportsXhigh = focusedModel ? modelSupportsXhighEffort(focusedModel) : false;
   const focusedSupportsMax = focusedModel ? modelSupportsMaxEffort(focusedModel) : false;
+  const focusedConfiguredModel = focusedModel ? getConfiguredModel(focusedModel) : undefined;
   const focusedDefaultEffort = getDefaultEffortLevelForOption(focusedValue);
+  const effortForDisplay = effort ?? (focusedConfiguredModel ? focusedDefaultEffort : undefined);
   // Clamp display when selected effort isn't supported by the focused model.
   // resolveAppliedEffort() does the same downgrade at API-send time.
   const displayEffort =
-    effort === 'max' && !focusedSupportsMax
-      ? focusedSupportsXhigh
-        ? 'xhigh'
-        : 'high'
-      : effort === 'xhigh' && !focusedSupportsXhigh
-        ? 'high'
-        : effort;
+    effortForDisplay &&
+    focusedConfiguredModel?.effortLevels !== undefined &&
+    !focusedConfiguredModel.effortLevels.includes(effortForDisplay)
+      ? focusedConfiguredModel.effortLevels.includes(focusedDefaultEffort)
+        ? focusedDefaultEffort
+        : undefined
+      : effortForDisplay === 'max' && !focusedSupportsMax
+        ? focusedSupportsXhigh
+          ? 'xhigh'
+          : 'high'
+        : effortForDisplay === 'xhigh' && !focusedSupportsXhigh
+          ? 'high'
+          : effortForDisplay;
 
   const handleFocus = useCallback(
     (value: string) => {
@@ -175,12 +187,19 @@ export function ModelPicker({
   const handleCycleEffort = useCallback(
     (direction: 'left' | 'right') => {
       if (!focusedSupportsEffort) return;
-      setEffort(prev =>
-        cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsXhigh, focusedSupportsMax),
-      );
+      setEffort(prev => {
+        if (focusedConfiguredModel?.effortLevels !== undefined) {
+          return cycleConfiguredEffortLevel(
+            prev ?? focusedDefaultEffort,
+            direction,
+            focusedConfiguredModel.effortLevels,
+          );
+        }
+        return cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsXhigh, focusedSupportsMax);
+      });
       setHasToggledEffort(true);
     },
-    [focusedSupportsEffort, focusedSupportsXhigh, focusedSupportsMax, focusedDefaultEffort],
+    [focusedConfiguredModel, focusedSupportsEffort, focusedSupportsXhigh, focusedSupportsMax, focusedDefaultEffort],
   );
 
   useKeybindings(
@@ -196,27 +215,38 @@ export function ModelPicker({
     logEvent('tengu_model_command_menu_effort', {
       effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     });
+    const selectedModel = resolveOptionModel(value);
+    const selectedConfiguredModel = selectedModel ? getConfiguredModel(selectedModel) : undefined;
+    const selectedSupportsEffort =
+      !!selectedModel &&
+      modelSupportsEffort(selectedModel) &&
+      (effort === undefined ||
+        selectedConfiguredModel?.effortLevels === undefined ||
+        selectedConfiguredModel.effortLevels.includes(effort));
     if (!skipSettingsWrite) {
       // Prior comes from userSettings on disk — NOT merged settings (which
       // includes project/policy layers that must not leak into the user's
       // global ~/.claude/settings.json), and NOT AppState.effortValue (which
       // includes session-ephemeral sources like --effort CLI flag).
       // See resolvePickerEffortPersistence JSDoc.
-      const effortLevel = resolvePickerEffortPersistence(
-        effort,
-        getDefaultEffortLevelForOption(value),
-        getSettingsForSource('userSettings')?.effortLevel,
-        hasToggledEffort,
-      );
+      const effortLevel = selectedSupportsEffort
+        ? resolvePickerEffortPersistence(
+            effort,
+            getDefaultEffortLevelForOption(value),
+            getSettingsForSource('userSettings')?.effortLevel,
+            hasToggledEffort,
+          )
+        : undefined;
       const persistable = toPersistableEffort(effortLevel);
       if (persistable !== undefined) {
         updateSettingsForSource('userSettings', { effortLevel: persistable });
+      } else if (!selectedSupportsEffort) {
+        updateSettingsForSource('userSettings', { effortLevel: undefined });
       }
       setAppState(prev => ({ ...prev, effortValue: effortLevel }));
     }
 
-    const selectedModel = resolveOptionModel(value);
-    const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+    const selectedEffort = hasToggledEffort && selectedSupportsEffort ? effort : undefined;
     if (value === NO_PREFERENCE) {
       onSelect(null, selectedEffort);
       return;
@@ -226,8 +256,8 @@ export function ModelPicker({
     // base form — not `value`, which may carry a `[1m]` suffix from predefined
     // 1M options and would never match.
     const baseValue = value.replace(/\[1m\]/i, '');
-    const wants1M = marked1MValues.has(baseValue);
-    const finalValue = wants1M ? `${baseValue}[1m]` : baseValue;
+    const wants1M = !selectedConfiguredModel && marked1MValues.has(baseValue);
+    const finalValue = selectedConfiguredModel?.id ?? (wants1M ? `${baseValue}[1m]` : baseValue);
     onSelect(finalValue, selectedEffort);
   }
 
@@ -240,7 +270,9 @@ export function ModelPicker({
           </Text>
           <Text dimColor>
             {headerText ??
-              'Choose a model for this and future sessions. Use ← → to adjust effort, Space to toggle 1M context.'}
+              (usesConfiguredCatalog
+                ? 'Choose a configured model for this and future sessions. Use ← → to adjust effort.'
+                : 'Choose a model for this and future sessions. Use ← → to adjust effort, Space to toggle 1M context.')}
           </Text>
           {sessionModel && (
             <Text dimColor>
@@ -271,17 +303,32 @@ export function ModelPicker({
 
         <Box marginBottom={1} flexDirection="column">
           {focusedSupportsEffort ? (
-            <Text dimColor>
-              <EffortLevelIndicator effort={displayEffort} /> {capitalize(displayEffort)} effort
-              {displayEffort === focusedDefaultEffort ? ` (default)` : ``} <Text color="subtle">← → to adjust</Text>
-            </Text>
+            displayEffort ? (
+              <Text dimColor>
+                <EffortLevelIndicator effort={displayEffort} /> {capitalize(displayEffort)} effort
+                {displayEffort === focusedDefaultEffort ? ` (default)` : ``} <Text color="subtle">← → to adjust</Text>
+              </Text>
+            ) : (
+              <Text dimColor>
+                <EffortLevelIndicator effort={undefined} /> Provider default effort{' '}
+                <Text color="subtle">← → to adjust</Text>
+              </Text>
+            )
           ) : (
             <Text color="subtle">
               <EffortLevelIndicator effort={undefined} /> Effort not supported
               {focusedModelName ? ` for ${focusedModelName}` : ''}
             </Text>
           )}
-          {is1MMarked ? (
+          {usesConfiguredCatalog ? (
+            <Text color="subtle">
+              <EffortLevelIndicator effort={focusedConfiguredModel?.contextWindow ? 'high' : undefined} /> Context
+              window:{' '}
+              {focusedConfiguredModel?.contextWindow
+                ? `${focusedConfiguredModel.contextWindow.toLocaleString()} tokens`
+                : 'provider default'}
+            </Text>
+          ) : is1MMarked ? (
             <Text dimColor>
               <EffortLevelIndicator effort={'high'} /> 1M context on
               <Text color="subtle"> · Space to toggle</Text>
@@ -366,6 +413,20 @@ function cycleEffortLevel(
   } else {
     return levels[(currentIndex - 1 + levels.length) % levels.length]!;
   }
+}
+
+function cycleConfiguredEffortLevel(
+  current: EffortLevel,
+  direction: 'left' | 'right',
+  levels: EffortLevel[],
+): EffortLevel | undefined {
+  if (levels.length === 0) return undefined;
+  const index = levels.indexOf(current);
+  const currentIndex = index === -1 ? 0 : index;
+  if (direction === 'right') {
+    return levels[(currentIndex + 1) % levels.length];
+  }
+  return levels[(currentIndex - 1 + levels.length) % levels.length];
 }
 
 function getDefaultEffortLevelForOption(value?: string): EffortLevel {

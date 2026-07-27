@@ -13,6 +13,7 @@ import {
   isChatGPTAuthMode,
   isChatGPTCodexReasoningModel,
 } from './model/chatgptModels.js'
+import { getConfiguredModel } from './model/configuredModels.js'
 
 export type { EffortLevel }
 
@@ -35,6 +36,13 @@ export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
   if (isEnvTruthy(process.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT)) {
     return true
+  }
+  const configuredModel = getConfiguredModel(model)
+  if (configuredModel) {
+    return (
+      configuredModel.effortLevels === undefined ||
+      configuredModel.effortLevels.length > 0
+    )
   }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
@@ -74,6 +82,10 @@ export function modelSupportsEffort(model: string): boolean {
 // Effort max/xhigh restrictions removed — all models that support effort
 // can now use these levels. API errors are the user's responsibility.
 export function modelSupportsMaxEffort(_model: string): boolean {
+  const configuredModel = getConfiguredModel(_model)
+  if (configuredModel?.effortLevels !== undefined) {
+    return configuredModel.effortLevels.includes('max')
+  }
   const supported3P = get3PModelCapabilityOverride(_model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -82,6 +94,10 @@ export function modelSupportsMaxEffort(_model: string): boolean {
 }
 
 export function modelSupportsXhighEffort(_model: string): boolean {
+  const configuredModel = getConfiguredModel(_model)
+  if (configuredModel?.effortLevels !== undefined) {
+    return configuredModel.effortLevels.includes('xhigh')
+  }
   const supported3P = get3PModelCapabilityOverride(_model, 'xhigh_effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -189,6 +205,15 @@ export function resolveAppliedEffort(
   }
   const resolved =
     envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  const configuredModel = getConfiguredModel(model)
+  if (
+    configuredModel?.effortLevels !== undefined &&
+    (configuredModel.effortLevels.length === 0 ||
+      (typeof resolved === 'string' &&
+        !configuredModel.effortLevels.includes(resolved)))
+  ) {
+    return undefined
+  }
   // OpenAI Responses uses xhigh as its highest public reasoning effort.
   // Keep /effort max usable as a familiar alias in ChatGPT subscription mode.
   if (

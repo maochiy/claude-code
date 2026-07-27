@@ -60,6 +60,10 @@ describe('resolveGrokModel', () => {
     expect(resolveGrokModel('some-unknown-model')).toBe('some-unknown-model')
   })
 
+  test('does not infer a family from a custom model ID substring', () => {
+    expect(resolveGrokModel('vendor-sonnet-fast')).toBe('vendor-sonnet-fast')
+  })
+
   test('strips [1m] suffix before lookup', () => {
     expect(resolveGrokModel('claude-sonnet-4-6[1m]')).toBe('grok-3-mini-fast')
   })

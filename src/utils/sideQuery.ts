@@ -36,15 +36,13 @@ import { getOpenAIClient } from '../services/api/openai/client.js'
 import { getGrokClient } from '../services/api/grok/client.js'
 import {
   anthropicMessagesToOpenAI,
-  resolveOpenAIModel,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
-  resolveGrokModel,
-  resolveGeminiModel,
   anthropicToolsToGemini,
   anthropicToolChoiceToGemini,
 } from '@ant/model-provider'
 import type { SystemPrompt } from './systemPromptType.js'
+import { resolveProviderModelId } from './model/providerModel.js'
 
 type MessageParam = Anthropic.MessageParam
 type TextBlockParam = Anthropic.TextBlockParam
@@ -402,10 +400,10 @@ async function sideQueryViaOpenAICompatible(
   // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
   let client: import('openai').default
   if (provider === 'grok') {
-    openaiModel = resolveGrokModel(normalizedModel)
+    openaiModel = resolveProviderModelId(normalizedModel, 'grok')
     client = getGrokClient({ maxRetries: opts.maxRetries ?? 2 })
   } else {
-    openaiModel = resolveOpenAIModel(normalizedModel)
+    openaiModel = resolveProviderModelId(normalizedModel, 'openai')
     client = getOpenAIClient({ maxRetries: opts.maxRetries ?? 2 })
   }
 
@@ -540,7 +538,7 @@ async function sideQueryViaGemini(
   } = opts
 
   const normalizedModel = normalizeModelStringForAPI(model)
-  const geminiModel = resolveGeminiModel(normalizedModel)
+  const geminiModel = resolveProviderModelId(normalizedModel, 'gemini')
 
   // Build Gemini contents from Anthropic MessageParam[]
   const contents: Array<{

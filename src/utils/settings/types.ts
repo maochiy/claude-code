@@ -33,6 +33,32 @@ export const EnvironmentVariablesSchema = lazySchema(() =>
   z.record(z.string(), z.coerce.string()),
 )
 
+export const ConfiguredModelSchema = lazySchema(() =>
+  z.object({
+    id: z
+      .string()
+      .min(1)
+      .describe('Exact model ID sent to the configured API provider'),
+    name: z.string().optional().describe('Display name shown in model pickers'),
+    description: z
+      .string()
+      .optional()
+      .describe('Optional user-facing model description'),
+    contextWindow: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Model context window size in tokens'),
+    effortLevels: z
+      .array(z.enum(['low', 'medium', 'high', 'xhigh', 'max']))
+      .optional()
+      .describe(
+        'Supported effort levels. Missing means all levels; an empty array means effort is unsupported',
+      ),
+  }),
+)
+
 /**
  * Schema for permissions section
  */
@@ -370,12 +396,18 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe(
           'API provider type. "anthropic" uses the Anthropic API (default), "openai" uses the OpenAI Chat Completions API, "gemini" uses the Gemini API, and "grok" uses the xAI Grok API (OpenAI-compatible). ' +
-            'When set to "openai", configure OPENAI_API_KEY, OPENAI_BASE_URL, and OPENAI_MODEL. When set to "gemini", configure GEMINI_API_KEY and optional GEMINI_BASE_URL. When set to "grok", configure GROK_API_KEY (or XAI_API_KEY), optional GROK_BASE_URL, GROK_MODEL, and GROK_MODEL_MAP.',
+            'Use model + models for a selectable provider model catalog. Legacy single-model environment variables remain supported.',
         ),
       model: z
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      models: z
+        .array(ConfiguredModelSchema())
+        .optional()
+        .describe(
+          'Configured provider model catalog. Model IDs are sent to the provider unchanged',
+        ),
       // Enterprise allowlist of models
       availableModels: z
         .array(z.string())
@@ -1204,6 +1236,7 @@ export type DeniedMcpServerEntry = z.infer<
   ReturnType<typeof DeniedMcpServerEntrySchema>
 >
 export type SettingsJson = z.infer<ReturnType<typeof SettingsSchema>>
+export type ConfiguredModel = z.infer<ReturnType<typeof ConfiguredModelSchema>>
 
 /**
  * Type guard for MCP server entry with serverName

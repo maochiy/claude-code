@@ -92,6 +92,12 @@ describe('resolveGeminiModel', () => {
     )
   })
 
+  test('does not infer a family from a custom model ID substring', () => {
+    expect(resolveGeminiModel('vendor-opus-reasoning')).toBe(
+      'vendor-opus-reasoning',
+    )
+  })
+
   test('throws when no Gemini model configuration is available', () => {
     expect(() => resolveGeminiModel('claude-sonnet-4-6')).toThrow(
       'Gemini provider requires GEMINI_MODEL or GEMINI_DEFAULT_SONNET_MODEL (or ANTHROPIC_DEFAULT_SONNET_MODEL for backward compatibility) to be configured.',

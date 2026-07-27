@@ -17,9 +17,22 @@ const DEFAULT_MODEL_MAP: Record<string, string> = {
 }
 
 function getModelFamily(model: string): 'haiku' | 'sonnet' | 'opus' | null {
-  if (/haiku/i.test(model)) return 'haiku'
-  if (/opus/i.test(model)) return 'opus'
-  if (/sonnet/i.test(model)) return 'sonnet'
+  const normalized = model.toLowerCase()
+  if (
+    normalized === 'haiku' ||
+    (normalized.startsWith('claude-') && normalized.includes('haiku'))
+  )
+    return 'haiku'
+  if (
+    normalized === 'opus' ||
+    (normalized.startsWith('claude-') && normalized.includes('opus'))
+  )
+    return 'opus'
+  if (
+    normalized === 'sonnet' ||
+    (normalized.startsWith('claude-') && normalized.includes('sonnet'))
+  )
+    return 'sonnet'
   return null
 }
 

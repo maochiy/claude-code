@@ -8,6 +8,7 @@ import {
   parseUserSpecifiedModel,
 } from './model.js'
 import { getAPIProvider } from './providers.js'
+import { hasConfiguredModelCatalog } from './configuredModels.js'
 
 export const AGENT_MODEL_OPTIONS = [...MODEL_ALIASES, 'inherit'] as const
 export type AgentModelAlias = (typeof AGENT_MODEL_OPTIONS)[number]
@@ -68,6 +69,14 @@ export function getAgentModel(
 
   // Prioritize tool-specified model if provided
   if (toolSpecifiedModel) {
+    if (
+      hasConfiguredModelCatalog() &&
+      (toolSpecifiedModel === 'haiku' ||
+        toolSpecifiedModel === 'sonnet' ||
+        toolSpecifiedModel === 'opus')
+    ) {
+      return parentModel
+    }
     if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {
       return parentModel
     }
@@ -85,6 +94,15 @@ export function getAgentModel(
       mainLoopModel: parentModel,
       exceeds200kTokens: false,
     })
+  }
+
+  if (
+    hasConfiguredModelCatalog() &&
+    (agentModelWithExp === 'haiku' ||
+      agentModelWithExp === 'sonnet' ||
+      agentModelWithExp === 'opus')
+  ) {
+    return parentModel
   }
 
   if (aliasMatchesParentTier(agentModelWithExp, parentModel)) {
