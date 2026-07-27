@@ -1,4 +1,5 @@
 import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
+import type { EffortLevel } from '../../utils/effort.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 
 export const DESKTOP_PROTOCOL_VERSION = 1
@@ -33,6 +34,7 @@ export interface RuntimeSessionOptions {
   model?: string
   fallbackModel?: string
   thinkingConfig?: ThinkingConfig
+  effortLevel?: EffortLevel
   permissionMode: DesktopPermissionMode
   environment: RuntimeEnvironment
   mcpServers?: Record<string, unknown>
@@ -53,6 +55,7 @@ export type RuntimeCommand =
   | { type: 'session.close' }
   | { type: 'session.getState' }
   | { type: 'session.setPermissionMode'; mode: DesktopPermissionMode }
+  | { type: 'session.setEffortLevel'; level?: EffortLevel }
   | { type: 'session.compact'; instructions?: string }
   | { type: 'session.fork'; upToMessageUuid?: string }
   | { type: 'session.rewind'; messageUuid: string }

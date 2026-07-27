@@ -71,6 +71,9 @@ const thinkingConfig: JsonSchema = {
     objectSchema({ type: { const: 'disabled' } }, ['type']),
   ],
 }
+const effortLevel: JsonSchema = {
+  enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+}
 const environment = objectSchema(
   {
     variables: {
@@ -89,6 +92,7 @@ const sessionOptions = objectSchema(
     model: nonEmptyString,
     fallbackModel: nonEmptyString,
     thinkingConfig,
+    effortLevel,
     permissionMode,
     environment,
     mcpServers: { type: 'object' },
@@ -234,6 +238,7 @@ const commandPayload: JsonSchema = {
     payloadSchema('session.setPermissionMode', { mode: permissionMode }, [
       'mode',
     ]),
+    payloadSchema('session.setEffortLevel', { level: effortLevel }),
     payloadSchema('session.compact', {
       instructions: nonEmptyString,
     }),

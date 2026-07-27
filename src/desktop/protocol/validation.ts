@@ -9,6 +9,7 @@ import {
   type RuntimeInteractionResponse,
   type RuntimeSessionOptions,
 } from './types.js'
+import { isEffortLevel } from '../../utils/effort.js'
 
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 const PERMISSION_MODES = new Set<DesktopPermissionMode>([
@@ -131,6 +132,15 @@ function assertThinkingConfig(value: unknown, path: string): void {
   }
 }
 
+function assertOptionalEffortLevel(value: unknown, path: string): void {
+  if (
+    value !== undefined &&
+    (typeof value !== 'string' || !isEffortLevel(value))
+  ) {
+    throw new Error(`${path} 非法`)
+  }
+}
+
 function assertSessionOptions(
   value: unknown,
   path: string,
@@ -144,6 +154,7 @@ function assertSessionOptions(
   if (value.thinkingConfig !== undefined) {
     assertThinkingConfig(value.thinkingConfig, `${path}.thinkingConfig`)
   }
+  assertOptionalEffortLevel(value.effortLevel, `${path}.effortLevel`)
   assertPermissionMode(value.permissionMode, `${path}.permissionMode`)
   assertRecord(value.environment, `${path}.environment`)
   assertStringRecord(
@@ -339,6 +350,10 @@ export function assertCommandEnvelope(
     case 'session.setPermissionMode':
       assertSessionId(value)
       assertPermissionMode(payload.mode, `${payload.type}.mode`)
+      return
+    case 'session.setEffortLevel':
+      assertSessionId(value)
+      assertOptionalEffortLevel(payload.level, `${payload.type}.level`)
       return
     case 'session.compact':
       assertSessionId(value)

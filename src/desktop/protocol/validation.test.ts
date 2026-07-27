@@ -117,6 +117,32 @@ describe('Desktop Runtime protocol validation', () => {
     expect(() => assertCommandEnvelope(envelope)).toThrow('outcome 不支持')
   })
 
+  test('接受合法的 Session 思考等级', () => {
+    expect(() =>
+      assertCommandEnvelope(
+        commandEnvelope(
+          { type: 'session.setEffortLevel', level: 'xhigh' },
+          'session-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('拒绝非法的 Session 思考等级', () => {
+    const envelope = commandEnvelope(
+      { type: 'session.setEffortLevel', level: 'high' },
+      'session-1',
+    ) as unknown as {
+      protocolVersion: number
+      requestId: string
+      sessionId: string
+      timestamp: number
+      payload: { type: 'session.setEffortLevel'; level: string }
+    }
+    envelope.payload.level = 'ultra'
+    expect(() => assertCommandEnvelope(envelope)).toThrow('level 非法')
+  })
+
   test('接受完整 runtime event', () => {
     expect(() =>
       assertEventEnvelope(

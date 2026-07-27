@@ -44,6 +44,7 @@ import {
 } from '../../utils/sessionStorage.js'
 import { setOriginalCwd, switchSession } from '../../bootstrap/state.js'
 import type { SessionId } from '../../types/ids.js'
+import type { EffortLevel } from '../../utils/effort.js'
 import { getAgentDefinitionsWithOverrides } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
 import type { ClaudeCodeDesktopHostBridge } from '../bridge/DesktopHostBridge.js'
 import type {
@@ -60,6 +61,7 @@ export interface HeadlessRuntimeSession {
   interrupt(): void
   resetAfterInterrupt(): void
   setPermissionMode(mode: DesktopPermissionMode): void
+  setEffortLevel(level: EffortLevel | undefined): void
   getMessages(): ReturnType<QueryEngine['getMessages']>
   getFileHistoryState(): AppState['fileHistory']
   dispose(): Promise<void>
@@ -161,6 +163,7 @@ export async function createHeadlessRuntimeSession(
 
   const appState: AppState = {
     ...getDefaultAppState(),
+    effortValue: options.effortLevel,
     toolPermissionContext: permissionContext,
     mcp: {
       ...getDefaultAppState().mcp,
@@ -267,6 +270,12 @@ export async function createHeadlessRuntimeSession(
           ...prev.toolPermissionContext,
           mode: mode as PermissionMode,
         },
+      }))
+    },
+    setEffortLevel: level => {
+      store.setState(prev => ({
+        ...prev,
+        effortValue: level,
       }))
     },
     getMessages: () => engine.getMessages(),

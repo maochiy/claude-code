@@ -246,6 +246,19 @@ async function handleCommand(
         envelope.requestId,
       )
       return
+    case 'session.setEffortLevel':
+      session?.setEffortLevel(command.level)
+      if (sessionOptions) {
+        sessionOptions = {
+          ...sessionOptions,
+          effortLevel: command.level,
+        }
+      }
+      send(
+        { type: 'response.success', responseTo: envelope.requestId },
+        envelope.requestId,
+      )
+      return
     case 'interaction.resolve': {
       const pending = pendingInteractions.get(command.interactionId)
       if (!pending)
