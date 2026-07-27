@@ -35,14 +35,12 @@ export function resolveDesktopModelCatalog(
   const kernelOptions = getModelOptions()
   const models = providerConfiguration.models.map(configured => {
     const value = normalizeConfiguredModelId(configured.id).id
-    const option = kernelOptions.find(candidate =>
-      candidate.value === value ||
-      (
-        candidate.value === null &&
-        normalizeConfiguredModelId(
-          providerConfiguration.defaultModel ?? '',
-        ).id === value
-      ),
+    const option = kernelOptions.find(
+      candidate =>
+        candidate.value === value ||
+        (candidate.value === null &&
+          normalizeConfiguredModelId(providerConfiguration.defaultModel ?? '')
+            .id === value),
     )
     const resolvedModel =
       value === 'default'
@@ -56,8 +54,7 @@ export function resolveDesktopModelCatalog(
         ? [...configuredModel.effortLevels]
         : supportsEffort
           ? EFFORT_LEVELS.filter(level => {
-              if (level === 'max')
-                return modelSupportsMaxEffort(resolvedModel)
+              if (level === 'max') return modelSupportsMaxEffort(resolvedModel)
               if (level === 'xhigh')
                 return modelSupportsXhighEffort(resolvedModel)
               return true
@@ -85,8 +82,7 @@ export function resolveDesktopModelCatalog(
             ),
           }
         : {}),
-      supportsAdaptiveThinking:
-        modelSupportsAdaptiveThinking(resolvedModel),
+      supportsAdaptiveThinking: modelSupportsAdaptiveThinking(resolvedModel),
       supportsFastMode: isFastModeSupportedByModel(option?.value ?? value),
       supportsAutoMode: modelSupportsAutoMode(resolvedModel),
     }
