@@ -26,7 +26,6 @@ import type {
   PermissionMode,
 } from '../../types/permissions.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { enableConfigs } from '../../utils/config.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { loadConversationForResume } from '../../utils/conversationRecovery.js'
@@ -124,7 +123,6 @@ export async function createHeadlessRuntimeSession(
   options: RuntimeSessionOptions,
   bridge: ClaudeCodeDesktopHostBridge,
 ): Promise<HeadlessRuntimeSession> {
-  enableConfigs()
   initBuiltinPlugins()
   initBundledSkills()
 

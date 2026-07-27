@@ -11,7 +11,8 @@ afterEach(() => {
 })
 
 describe('Desktop Runtime 模型目录', () => {
-  test('Proma 配置的模型集合决定目录，模型能力仍由 CCB 内核解析', () => {
+  test('未打开 Session 时先完成配置 Bootstrap，再由 CCB 内核解析模型目录', () => {
+    process.env.NODE_ENV = 'production'
     const catalog = resolveDesktopModelCatalog(
       {
         variables: {

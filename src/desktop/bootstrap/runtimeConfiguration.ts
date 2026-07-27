@@ -1,5 +1,6 @@
 import { setFlagSettingsInline } from '../../bootstrap/state.js'
 import { clearOpenAIClientCache } from '../../services/api/openai/client.js'
+import { enableConfigs } from '../../utils/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../utils/managedEnv.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type {
@@ -21,6 +22,7 @@ export function applyDesktopRuntimeConfiguration(
 
   process.env.CLAUDE_CONFIG_DIR = environment.configDir
   process.env.CLAUDE_CODE_ENTRYPOINT = 'desktop-runtime'
+  enableConfigs()
   setFlagSettingsInline(
     providerConfiguration
       ? {
