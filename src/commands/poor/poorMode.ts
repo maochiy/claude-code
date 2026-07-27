@@ -6,22 +6,20 @@
  */
 
 import {
-  getInitialSettings,
-  updateSettingsForSource,
-} from '../../utils/settings/settings.js'
+  readPoorModeSetting,
+  writePoorModeSetting,
+} from './poorModeSettings.js'
 
 let poorModeActive: boolean | null = null
 
 export function isPoorModeActive(): boolean {
   if (poorModeActive === null) {
-    poorModeActive = getInitialSettings().poorMode === true
+    poorModeActive = readPoorModeSetting()
   }
   return poorModeActive
 }
 
 export function setPoorMode(active: boolean): void {
   poorModeActive = active
-  updateSettingsForSource('userSettings', {
-    poorMode: active || undefined,
-  })
+  writePoorModeSetting(active)
 }

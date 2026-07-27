@@ -21,7 +21,19 @@ export type ChatGPTAuthTokens = {
   refreshToken: string
   accountId?: string
   lastRefresh?: string
+  expiresAt?: number
 }
+
+export type ChatGPTCredentialUpdate = {
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+  accountId?: string
+}
+
+let credentialsUpdateHandler:
+  | ((credentials: ChatGPTCredentialUpdate) => void)
+  | undefined
 
 export type ChatGPTAuth = {
   accessToken: string
@@ -118,6 +130,41 @@ function extractAccountId(tokens: {
     if (accountId) return accountId
   }
   return undefined
+}
+
+function readInjectedAuth(): ChatGPTAuthTokens | null {
+  const accessToken = asString(process.env.OPENAI_CHATGPT_ACCESS_TOKEN)
+  const refreshToken = asString(process.env.OPENAI_CHATGPT_REFRESH_TOKEN)
+  if (!accessToken || !refreshToken) return null
+  const expiresAtRaw = Number(process.env.OPENAI_CHATGPT_EXPIRES_AT)
+  return {
+    idToken: asString(process.env.OPENAI_CHATGPT_ID_TOKEN) ?? accessToken,
+    accessToken,
+    refreshToken,
+    accountId:
+      asString(process.env.OPENAI_CHATGPT_ACCOUNT_ID) ??
+      extractAccountId({ accessToken }),
+    ...(Number.isFinite(expiresAtRaw) && expiresAtRaw > 0
+      ? { expiresAt: expiresAtRaw }
+      : {}),
+  }
+}
+
+function notifyCredentialsUpdated(tokens: ChatGPTAuthTokens): void {
+  const expiresAt = tokens.expiresAt ?? getTokenExpiryMs(tokens.accessToken)
+  if (expiresAt === null) return
+  credentialsUpdateHandler?.({
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt,
+    accountId: tokens.accountId ?? extractAccountId(tokens),
+  })
+}
+
+export function setChatGPTCredentialsUpdateHandler(
+  handler: ((credentials: ChatGPTCredentialUpdate) => void) | undefined,
+): void {
+  credentialsUpdateHandler = handler
 }
 
 async function readStoredAuth(path: string): Promise<ChatGPTAuthTokens | null> {
@@ -311,6 +358,7 @@ async function refreshTokens(
       accessToken: data.access_token,
       accountId: tokens.accountId,
     }),
+    expiresAt: getTokenExpiryMs(data.access_token) ?? undefined,
   }
 }
 
@@ -337,7 +385,8 @@ export async function removeChatGPTAuth(): Promise<void> {
 }
 
 export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
-  let tokens = await readStoredAuth(authFilePath())
+  const injectedTokens = readInjectedAuth()
+  let tokens = injectedTokens ?? (await readStoredAuth(authFilePath()))
   if (!tokens) {
     tokens = await readStoredAuth(codexAuthFilePath())
     if (tokens) {
@@ -349,10 +398,11 @@ export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
       'ChatGPT account is not logged in. Run /login and select ChatGPT account with subscription.',
     )
   }
-  const expiresAt = getTokenExpiryMs(tokens.accessToken)
+  const expiresAt = tokens.expiresAt ?? getTokenExpiryMs(tokens.accessToken)
   if (expiresAt !== null && expiresAt <= Date.now() + REFRESH_SKEW_MS) {
     tokens = await refreshTokens(tokens)
     await saveStoredAuth(tokens)
+    if (injectedTokens) notifyCredentialsUpdated(tokens)
   }
   return {
     accessToken: tokens.accessToken,

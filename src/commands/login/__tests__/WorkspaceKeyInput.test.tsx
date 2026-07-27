@@ -22,10 +22,6 @@ import { debugMock } from '../../../../tests/mocks/debug';
 mock.module('src/utils/log.ts', logMock);
 mock.module('src/utils/debug.ts', debugMock);
 mock.module('bun:bundle', () => ({ feature: () => false }));
-mock.module('src/utils/settings/settings.js', () => ({
-  getCachedOrDefaultSettings: () => ({}),
-  getSettings: () => ({}),
-}));
 mock.module('src/utils/config.ts', () => ({
   isConfigEnabled: () => true,
   getGlobalConfig: () => ({ workspaceApiKey: undefined }),

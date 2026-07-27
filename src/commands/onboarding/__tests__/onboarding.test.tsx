@@ -11,6 +11,7 @@ const _realOnboardingInkMod = (await import('@anthropic/ink')) as Record<string,
 let _useStubInkForOnboarding = true;
 afterAll(() => {
   _useStubInkForOnboarding = false;
+  mock.module('@anthropic/ink', () => _realOnboardingInkMod);
 });
 
 mock.module('bun:bundle', () => ({
@@ -50,16 +51,20 @@ mock.module('src/utils/config.js', () => ({
 // the `theme` subcommand JSX render path. Spread real ink so when the flag
 // flips off in afterAll, later test files see real components.
 mock.module('@anthropic/ink', () => {
-  if (_useStubInkForOnboarding) {
-    return {
-      ..._realOnboardingInkMod,
-      Box: ({ children }: { children?: React.ReactNode }) => React.createElement('box', null, children),
-      Pane: ({ children }: { children?: React.ReactNode }) => React.createElement('pane', null, children),
-      Text: ({ children }: { children?: React.ReactNode }) => React.createElement('text', null, children),
-      useTheme: () => ['dark', (_t: string) => undefined],
+  const createProxy = (stubName: string, realComponent: React.ElementType) =>
+    function InkComponentProxy({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) {
+      return _useStubInkForOnboarding
+        ? React.createElement(stubName, null, children)
+        : React.createElement(realComponent, props, children);
     };
-  }
-  return _realOnboardingInkMod;
+  const realUseTheme = _realOnboardingInkMod.useTheme as () => unknown;
+  return {
+    ..._realOnboardingInkMod,
+    Box: createProxy('box', _realOnboardingInkMod.Box as React.ElementType),
+    Pane: createProxy('pane', _realOnboardingInkMod.Pane as React.ElementType),
+    Text: createProxy('text', _realOnboardingInkMod.Text as React.ElementType),
+    useTheme: () => (_useStubInkForOnboarding ? ['dark', (_theme: string) => undefined] : realUseTheme()),
+  };
 });
 
 mock.module('src/components/ThemePicker.js', () => ({

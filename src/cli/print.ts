@@ -997,7 +997,7 @@ export async function runHeadless(
   )
 }
 
-function runHeadlessStreaming(
+export function runHeadlessStreaming(
   structuredIO: StructuredIO,
   mcpClients: MCPServerConnection[],
   commands: Command[],

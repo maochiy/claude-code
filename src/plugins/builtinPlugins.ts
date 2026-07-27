@@ -50,6 +50,14 @@ export function getBuiltinPluginDefinition(
 }
 
 /**
+ * 返回构建内置 Plugin 定义的只读快照，不读取用户启用状态。
+ * 用于生成确定性的 Desktop Capability Manifest。
+ */
+export function getBuiltinPluginDefinitions(): BuiltinPluginDefinition[] {
+  return [...BUILTIN_PLUGINS.values()]
+}
+
+/**
  * Get all registered built-in plugins as LoadedPlugin objects, split into
  * enabled/disabled based on user settings (with defaultEnabled as fallback).
  * Plugins whose isAvailable() returns false are omitted entirely.

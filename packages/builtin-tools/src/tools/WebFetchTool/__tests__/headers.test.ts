@@ -34,33 +34,22 @@ axiosHandle.stubs.isAxiosError = (error: unknown): boolean =>
   error !== null &&
   (error as { isAxiosError?: unknown }).isAxiosError === true
 
-mock.module('src/services/analytics/index.js', () => ({
-  logEvent: () => {},
-}))
-
-mock.module('src/services/api/claude.js', () => ({
-  queryHaiku: async () => ({ message: { content: [] } }),
-}))
-
-mock.module('src/utils/http.js', () => ({
-  getWebFetchUserAgent: () => 'TestAgent/1.0',
-}))
-
 mock.module('src/utils/log.ts', logMock)
 
-mock.module('src/utils/mcpOutputStorage.js', () => ({
-  isBinaryContentType: (contentType: string) =>
-    !contentType.toLowerCase().startsWith('text/'),
-  persistBinaryContent: async () => ({
-    filepath: '/tmp/webfetch-test.bin',
-    size: 0,
+mock.module(
+  '@claude-code-best/builtin-tools/tools/WebFetchTool/runtimeDependencies.js',
+  () => ({
+    logEvent: () => {},
+    queryHaiku: async () => ({ message: { content: [] } }),
+    getWebFetchUserAgent: () => 'TestAgent/1.0',
+    isBinaryContentType: (contentType: string) =>
+      !contentType.toLowerCase().startsWith('text/'),
+    persistBinaryContent: async () => ({
+      filepath: '/tmp/webfetch-test.bin',
+      size: 0,
+    }),
   }),
-}))
-
-mock.module('src/utils/settings/settings.js', () => ({
-  getInitialSettings: () => ({}),
-  getSettings_DEPRECATED: () => ({ skipWebFetchPreflight: true }),
-}))
+)
 
 beforeEach(() => {
   getMock = async () => ({

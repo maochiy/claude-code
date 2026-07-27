@@ -2,16 +2,14 @@ import axios, { type AxiosResponse } from 'axios'
 import { LRUCache } from 'lru-cache'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from 'src/services/analytics/index.js'
-import { queryHaiku } from 'src/services/api/claude.js'
-import { AbortError } from 'src/utils/errors.js'
-import { getWebFetchUserAgent } from 'src/utils/http.js'
-import { logError } from 'src/utils/log.js'
-import {
+  getWebFetchUserAgent,
   isBinaryContentType,
+  logEvent,
   persistBinaryContent,
-} from 'src/utils/mcpOutputStorage.js'
+  queryHaiku,
+} from './runtimeDependencies.js'
+import { AbortError } from 'src/utils/errors.js'
+import { logError } from 'src/utils/log.js'
 import { getSettings_DEPRECATED } from 'src/utils/settings/settings.js'
 import { asSystemPrompt } from 'src/utils/systemPromptType.js'
 import { isPreapprovedHost } from './preapproved.js'

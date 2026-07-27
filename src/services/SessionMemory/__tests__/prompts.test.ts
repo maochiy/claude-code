@@ -74,69 +74,12 @@ function realFirstPartyNameToCanonical(name: string): string {
   return name
 }
 
-mock.module('src/utils/model/model.js', () => ({
-  getMainLoopModel: mockGetMainLoopModel,
-  getSmallFastModel: mock(() => 'claude-haiku'),
-  getUserSpecifiedModelSetting: mock(() => undefined),
-  getBestModel: mock(() => 'claude-opus-4-7'),
-  getDefaultOpusModel: mock(() =>
-    useMockForSessionMemory
-      ? 'claude-opus-4-7'
-      : resolveDefaultOpusModelForTests(),
-  ),
-  getDefaultSonnetModel: mock(() => 'claude-sonnet-4-6'),
-  getDefaultHaikuModel: mock(() => 'claude-haiku-3-5'),
-  getRuntimeMainLoopModel: mock(() => 'claude-opus-4-7'),
-  getDefaultMainLoopModelSetting: mock(() => 'claude-opus-4-7'),
-  getDefaultMainLoopModel: mock(() => 'claude-opus-4-7'),
-  firstPartyNameToCanonical: mock((n: string) =>
-    realFirstPartyNameToCanonical(n),
-  ),
-  getCanonicalName: mock((n: string) => n),
-  getClaudeAiUserDefaultModelDescription: mock(() => ''),
-  renderDefaultModelSetting: mock(() => ''),
-  getOpusPricingSuffix: mock(() => ''),
-  isOpus1mMergeEnabled: mock(() => false),
-  renderModelSetting: mock((s: string) => s),
-  getPublicModelDisplayName: mock(() => null),
-  renderModelName: mock((n: string) => n),
-  getPublicModelName: mock((n: string) => n),
-  parseUserSpecifiedModel: mock((m: string) => m),
-  resolveSkillModelOverride: mock(() => undefined),
-  isLegacyModelRemapEnabled: mock(() => false),
-  modelDisplayString: mock(() => ''),
-  getMarketingNameForModel: mock(() => undefined),
-  normalizeModelStringForAPI: mock((m: string) => m),
-  isNonCustomOpusModel: mock(() => false),
-}))
-
-mock.module('src/utils/effort.js', () => ({
-  getDisplayedEffortLevel: mockGetDisplayedEffortLevel as (
-    _m: string,
-    _e: unknown,
-  ) => string,
-  getEffortEnvOverride: mock(() => undefined),
-  resolveAppliedEffort: mock(() => 'high'),
-  getInitialEffortSetting: mock(() => undefined),
-  parseEffortValue: mock(() => undefined),
-  toPersistableEffort: mock(() => undefined),
-  modelSupportsEffort: mock(() => true),
-  modelSupportsMaxEffort: mock(() => true),
-  modelSupportsXhighEffort: mock(() => false),
-  isEffortLevel: mock(() => true),
-  getEffortSuffix: mock(() => ''),
-  convertEffortValueToLevel: mock(() => 'high'),
-  getDefaultEffortForModel: mock(() => undefined),
-  getEffortLevelDescription: mock(() => ''),
-  getEffortValueDescription: mock(() => ''),
-  getOpusDefaultEffortConfig: mock(() => ({
-    enabled: true,
-    dialogTitle: '',
-    dialogDescription: '',
-  })),
-  resolvePickerEffortPersistence: mock(() => undefined),
-  isValidNumericEffort: mock(() => false),
-  EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
+mock.module('src/services/promptRuntimeContext.js', () => ({
+  resolvePromptRuntimeContext: () => ({
+    model: mockGetMainLoopModel(),
+    effort: mockGetDisplayedEffortLevel(),
+    cwd: process.cwd(),
+  }),
 }))
 
 // Use REAL semantics for non-overridden envUtils exports — this mock is

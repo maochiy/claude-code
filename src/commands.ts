@@ -432,6 +432,17 @@ const COMMANDS = memoize((): Command[] => [
     : []),
 ])
 
+/**
+ * 返回 CLI 内置 Command 定义的只读快照。
+ *
+ * Desktop Capability Manifest 通过这里复用 CLI 的同一注册表，避免维护
+ * 第二套 Slash Command 清单。项目级、用户级 Skill Command 不属于构建期
+ * Core Manifest，会在 Session 打开后动态发现。
+ */
+export function getBuiltInCommandsForCapabilityManifest(): Command[] {
+  return [...COMMANDS()]
+}
+
 export const builtInCommandNames = memoize(
   (): Set<string> =>
     new Set(COMMANDS().flatMap(_ => [_.name, ...(_.aliases ?? [])])),

@@ -5,49 +5,22 @@
  * After the fix, it reads from / writes to settings.json via
  * getInitialSettings() and updateSettingsForSource().
  */
-import { afterAll, describe, expect, test, beforeEach, mock } from 'bun:test'
-import * as settingsModule from '../../../utils/settings/settings.js'
+import { describe, expect, test, beforeEach, mock } from 'bun:test'
 
 // ── Mocks must be declared before the module under test is imported ──────────
 
 let mockSettings: Record<string, unknown> = {}
 let lastUpdate: { source: string; patch: Record<string, unknown> } | null = null
 
-mock.module('src/utils/settings/settings.js', () => ({
-  loadManagedFileSettings: () => ({ settings: null, errors: [] }),
-  getManagedFileSettingsPresence: () => ({
-    hasBase: false,
-    hasDropIns: false,
-  }),
-  parseSettingsFile: () => ({ settings: null, errors: [] }),
-  getSettingsRootPathForSource: () => '',
-  getSettingsFilePathForSource: () => undefined,
-  getRelativeSettingsFilePathForSource: () => '',
-  getInitialSettings: () => mockSettings,
-  getSettingsForSource: () => mockSettings,
-  getPolicySettingsOrigin: () => null,
-  getSettingsWithErrors: () => ({ settings: mockSettings, errors: [] }),
-  getSettingsWithSources: () => ({ effective: mockSettings, sources: [] }),
-  getSettings_DEPRECATED: () => mockSettings,
-  settingsMergeCustomizer: () => undefined,
-  getManagedSettingsKeysForLogging: () => [],
-  // Keep unrelated exports aligned with the real settings module so this
-  // full-surface mock cannot change later test files if Bun keeps it alive.
-  hasAutoModeOptIn: () => true,
-  hasSkipDangerousModePermissionPrompt: () => false,
-  getAutoModeConfig: () => undefined,
-  getUseAutoModeDuringPlan: () => true,
-  rawSettingsContainsKey: (key: string) => key in mockSettings,
-  updateSettingsForSource: (source: string, patch: Record<string, unknown>) => {
+mock.module('src/commands/poor/poorModeSettings.js', () => ({
+  readPoorModeSetting: () => mockSettings.poorMode === true,
+  writePoorModeSetting: (active: boolean) => {
+    const patch = { poorMode: active || undefined }
+    const source = 'userSettings'
     lastUpdate = { source, patch }
     mockSettings = { ...mockSettings, ...patch }
   },
 }))
-
-afterAll(() => {
-  mock.restore()
-  mock.module('src/utils/settings/settings.js', () => settingsModule)
-})
 
 // Import AFTER mocks are registered. The query suffix gives this file its own
 // module instance so cross-file poorMode.js mocks cannot replace the subject
