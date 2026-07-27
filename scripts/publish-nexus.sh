@@ -8,6 +8,7 @@ PACKAGE_FILE="${1:-}"
 USE_EXISTING_AUTH="${NEXUS_USE_EXISTING_AUTH:-0}"
 PACK_CREATED=0
 TEMP_NPMRC=""
+PACKAGE_JSON_BACKUP=""
 
 cleanup() {
   if [[ -n "$TEMP_NPMRC" && -f "$TEMP_NPMRC" ]]; then
@@ -33,6 +34,15 @@ if [[ -z "$PACKAGE_FILE" ]]; then
   case "${#packages[@]}" in
     0)
       printf '当前目录没有 tarball，执行 npm pack...\n'
+      PACKAGE_JSON_BACKUP="$(mktemp "${TMPDIR:-/tmp}/package.json.XXXXXX")"
+      cp -- package.json "$PACKAGE_JSON_BACKUP"
+      node -e '
+        const fs = require("node:fs")
+        const path = "package.json"
+        const pkg = JSON.parse(fs.readFileSync(path, "utf8"))
+        delete pkg.scripts?.prepare
+        fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
+      ' || fail '无法临时处理 package.json'
       PACKAGE_FILE="$(HUSKY=0 npm_config_ignore_scripts=true npm pack --ignore-scripts --json | node -e '
         let input = ""
         process.stdin.on("data", chunk => { input += chunk })
@@ -42,6 +52,8 @@ if [[ -z "$PACKAGE_FILE" ]]; then
           process.stdout.write(result[0].filename)
         })
       ')" || fail 'npm pack 失败或无法确定生成的 tarball 文件'
+      mv -f -- "$PACKAGE_JSON_BACKUP" package.json
+      PACKAGE_JSON_BACKUP=""
       PACK_CREATED=1
       ;;
     1) PACKAGE_FILE="${packages[0]}" ;;
