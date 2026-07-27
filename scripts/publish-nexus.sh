@@ -6,9 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGE_FILE="${1:-}"
 USE_EXISTING_AUTH="${NEXUS_USE_EXISTING_AUTH:-0}"
-PACK_CREATED=0
 TEMP_NPMRC=""
-PACKAGE_JSON_BACKUP=""
 
 cleanup() {
   if [[ -n "$TEMP_NPMRC" && -f "$TEMP_NPMRC" ]]; then
@@ -27,22 +25,8 @@ command -v npm >/dev/null 2>&1 || fail "未找到 npm，请先在服务器安装
 cd "$PROJECT_ROOT"
 
 if [[ -z "$PACKAGE_FILE" ]]; then
-  printf '重新执行 npm pack，使用当前 package.json 生成最新 tarball...\n'
-  printf '执行 Vite 构建，生成最新 dist 产物...\n'
-  command -v bun >/dev/null 2>&1 || fail '未找到 bun；发布前需要安装 Bun 以生成 dist/cli-node.js'
-  bun run build:vite || fail '构建失败，未发布 npm 包'
-  [[ -f dist/cli-node.js ]] || fail '构建完成但缺少 dist/cli-node.js'
-
-  PACKAGE_JSON_BACKUP="$(mktemp "${TMPDIR:-/tmp}/package.json.XXXXXX")"
-  cp -- package.json "$PACKAGE_JSON_BACKUP"
-  node -e '
-    const fs = require("node:fs")
-    const path = "package.json"
-    const pkg = JSON.parse(fs.readFileSync(path, "utf8"))
-    delete pkg.scripts?.prepare
-    fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
-  ' || fail '无法临时处理 package.json'
-  PACKAGE_FILE="$(HUSKY=0 npm_config_ignore_scripts=true npm pack --ignore-scripts --json | node -e '
+  printf '使用 npm pack 构建最新 tarball...\n'
+  PACKAGE_FILE="$(npm pack --json | node -e '
     let input = ""
     process.stdin.on("data", chunk => { input += chunk })
     process.stdin.on("end", () => {
@@ -50,14 +34,11 @@ if [[ -z "$PACKAGE_FILE" ]]; then
       if (!Array.isArray(result) || !result[0]?.filename) process.exit(1)
       process.stdout.write(result[0].filename)
     })
-  ')" || fail 'npm pack 失败或无法确定生成的 tarball 文件'
-  mv -f -- "$PACKAGE_JSON_BACKUP" package.json
-  PACKAGE_JSON_BACKUP=""
-  PACK_CREATED=1
+  ')" || fail 'npm pack 失败，请确认依赖已安装且构建成功'
+else
+  [[ -f "$PACKAGE_FILE" ]] || fail "文件不存在: $PACKAGE_FILE"
+  [[ "$PACKAGE_FILE" == *.tgz ]] || fail "发布文件必须是 .tgz: $PACKAGE_FILE"
 fi
-
-[[ -f "$PACKAGE_FILE" ]] || fail "文件不存在: $PACKAGE_FILE"
-[[ "$PACKAGE_FILE" == *.tgz ]] || fail "发布文件必须是 .tgz: $PACKAGE_FILE"
 
 PACKAGE_FILE="$(cd "$(dirname "$PACKAGE_FILE")" && pwd)/$(basename "$PACKAGE_FILE")"
 
@@ -97,10 +78,4 @@ npm whoami --registry="$REGISTRY" >/dev/null \
 
 printf '认证成功，开始发布...\n'
 npm publish "$PACKAGE_FILE" --registry="$REGISTRY"
-
-if [[ "$PACK_CREATED" == "1" ]]; then
-  rm -f -- "$PACKAGE_FILE"
-  printf '已清理自动生成的 tarball。\n'
-fi
-
 printf '\n发布完成。\n'
