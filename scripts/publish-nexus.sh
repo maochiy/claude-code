@@ -33,7 +33,7 @@ if [[ -z "$PACKAGE_FILE" ]]; then
   case "${#packages[@]}" in
     0)
       printf '当前目录没有 tarball，执行 npm pack...\n'
-      PACKAGE_FILE="$(npm pack --json --ignore-scripts | node -e '
+      PACKAGE_FILE="$(HUSKY=0 npm_config_ignore_scripts=true npm pack --ignore-scripts --json | node -e '
         let input = ""
         process.stdin.on("data", chunk => { input += chunk })
         process.stdin.on("end", () => {
