@@ -351,6 +351,20 @@ export function assertCommandEnvelope(
       assertSessionId(value)
       assertPermissionMode(payload.mode, `${payload.type}.mode`)
       return
+    case 'session.updateConfig':
+      assertSessionId(value)
+      assertOptionalString(payload.model, `${payload.type}.model`)
+      if (payload.thinkingConfig !== undefined) {
+        assertThinkingConfig(
+          payload.thinkingConfig,
+          `${payload.type}.thinkingConfig`,
+        )
+      }
+      assertOptionalEffortLevel(
+        payload.effortLevel,
+        `${payload.type}.effortLevel`,
+      )
+      return
     case 'session.setEffortLevel':
       assertSessionId(value)
       assertOptionalEffortLevel(payload.level, `${payload.type}.level`)

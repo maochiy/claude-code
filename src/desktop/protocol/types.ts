@@ -55,6 +55,12 @@ export type RuntimeCommand =
   | { type: 'session.close' }
   | { type: 'session.getState' }
   | { type: 'session.setPermissionMode'; mode: DesktopPermissionMode }
+  | {
+      type: 'session.updateConfig'
+      model?: string
+      thinkingConfig?: ThinkingConfig
+      effortLevel?: EffortLevel
+    }
   | { type: 'session.setEffortLevel'; level?: EffortLevel }
   | { type: 'session.compact'; instructions?: string }
   | { type: 'session.fork'; upToMessageUuid?: string }

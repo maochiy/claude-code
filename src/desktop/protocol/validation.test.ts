@@ -128,6 +128,22 @@ describe('Desktop Runtime protocol validation', () => {
     ).not.toThrow()
   })
 
+  test('接受合法的 Session Runtime 配置更新', () => {
+    expect(() =>
+      assertCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.updateConfig',
+            model: 'claude-opus-4-6',
+            thinkingConfig: { type: 'adaptive' },
+            effortLevel: 'max',
+          },
+          'session-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
   test('拒绝非法的 Session 思考等级', () => {
     const envelope = commandEnvelope(
       { type: 'session.setEffortLevel', level: 'high' },

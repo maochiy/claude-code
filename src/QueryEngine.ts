@@ -1244,6 +1244,10 @@ export class QueryEngine {
   setModel(model: string): void {
     this.config.userSpecifiedModel = model
   }
+
+  setThinkingConfig(thinkingConfig: ThinkingConfig | undefined): void {
+    this.config.thinkingConfig = thinkingConfig
+  }
 }
 
 /**

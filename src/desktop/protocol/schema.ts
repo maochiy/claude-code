@@ -238,6 +238,11 @@ const commandPayload: JsonSchema = {
     payloadSchema('session.setPermissionMode', { mode: permissionMode }, [
       'mode',
     ]),
+    payloadSchema('session.updateConfig', {
+      model: nonEmptyString,
+      thinkingConfig,
+      effortLevel,
+    }),
     payloadSchema('session.setEffortLevel', { level: effortLevel }),
     payloadSchema('session.compact', {
       instructions: nonEmptyString,

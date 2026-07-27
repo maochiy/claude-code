@@ -61,6 +61,10 @@ export interface HeadlessRuntimeSession {
   interrupt(): void
   resetAfterInterrupt(): void
   setPermissionMode(mode: DesktopPermissionMode): void
+  setModel(model: string): void
+  setThinkingConfig(
+    thinkingConfig: RuntimeSessionOptions['thinkingConfig'],
+  ): void
   setEffortLevel(level: EffortLevel | undefined): void
   getMessages(): ReturnType<QueryEngine['getMessages']>
   getFileHistoryState(): AppState['fileHistory']
@@ -271,6 +275,12 @@ export async function createHeadlessRuntimeSession(
           mode: mode as PermissionMode,
         },
       }))
+    },
+    setModel: model => {
+      engine.setModel(model)
+    },
+    setThinkingConfig: thinkingConfig => {
+      engine.setThinkingConfig(thinkingConfig)
     },
     setEffortLevel: level => {
       store.setState(prev => ({

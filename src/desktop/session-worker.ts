@@ -246,6 +246,23 @@ async function handleCommand(
         envelope.requestId,
       )
       return
+    case 'session.updateConfig':
+      if (command.model) session?.setModel(command.model)
+      session?.setThinkingConfig(command.thinkingConfig)
+      session?.setEffortLevel(command.effortLevel)
+      if (sessionOptions) {
+        sessionOptions = {
+          ...sessionOptions,
+          model: command.model ?? sessionOptions.model,
+          thinkingConfig: command.thinkingConfig,
+          effortLevel: command.effortLevel,
+        }
+      }
+      send(
+        { type: 'response.success', responseTo: envelope.requestId },
+        envelope.requestId,
+      )
+      return
     case 'session.setEffortLevel':
       session?.setEffortLevel(command.level)
       if (sessionOptions) {
