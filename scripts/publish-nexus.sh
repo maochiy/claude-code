@@ -28,6 +28,11 @@ cd "$PROJECT_ROOT"
 
 if [[ -z "$PACKAGE_FILE" ]]; then
   printf '重新执行 npm pack，使用当前 package.json 生成最新 tarball...\n'
+  printf '执行 Vite 构建，生成最新 dist 产物...\n'
+  command -v bun >/dev/null 2>&1 || fail '未找到 bun；发布前需要安装 Bun 以生成 dist/cli-node.js'
+  bun run build:vite || fail '构建失败，未发布 npm 包'
+  [[ -f dist/cli-node.js ]] || fail '构建完成但缺少 dist/cli-node.js'
+
   PACKAGE_JSON_BACKUP="$(mktemp "${TMPDIR:-/tmp}/package.json.XXXXXX")"
   cp -- package.json "$PACKAGE_JSON_BACKUP"
   node -e '
