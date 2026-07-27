@@ -2,7 +2,7 @@ import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { EffortLevel } from '../../utils/effort.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 1
+export const DESKTOP_PROTOCOL_VERSION = 2
 export const DESKTOP_RUNTIME_NAME = 'claude-code-best'
 
 export type DesktopPermissionMode =
@@ -27,6 +27,38 @@ export interface RuntimeEnvironment {
   configDir: string
 }
 
+export interface RuntimeConfiguredModel {
+  id: string
+  name?: string
+  description?: string
+  contextWindow?: number
+  effortLevels?: EffortLevel[]
+}
+
+export interface RuntimeProviderConfiguration {
+  modelType: 'anthropic' | 'openai' | 'gemini' | 'grok'
+  defaultModel?: string
+  models: RuntimeConfiguredModel[]
+}
+
+export interface RuntimeModelInfo {
+  value: string
+  displayName: string
+  description: string
+  contextWindow: number
+  supportsEffort: boolean
+  supportedEffortLevels: EffortLevel[]
+  defaultEffortLevel?: EffortLevel
+  supportsAdaptiveThinking: boolean
+  supportsFastMode: boolean
+  supportsAutoMode: boolean
+}
+
+export interface RuntimeModelCatalog {
+  defaultModel?: string
+  models: RuntimeModelInfo[]
+}
+
 export interface RuntimeSessionOptions {
   cwd: string
   runtimeSessionId?: string
@@ -37,6 +69,7 @@ export interface RuntimeSessionOptions {
   effortLevel?: EffortLevel
   permissionMode: DesktopPermissionMode
   environment: RuntimeEnvironment
+  providerConfiguration?: RuntimeProviderConfiguration
   mcpServers?: Record<string, unknown>
   systemPrompt?: string
   appendSystemPrompt?: string
@@ -54,6 +87,11 @@ export type RuntimeCommand =
   | { type: 'session.suspend' }
   | { type: 'session.close' }
   | { type: 'session.getState' }
+  | {
+      type: 'session.resolveModelCatalog'
+      environment: RuntimeEnvironment
+      providerConfiguration: RuntimeProviderConfiguration
+    }
   | { type: 'session.setPermissionMode'; mode: DesktopPermissionMode }
   | {
       type: 'session.updateConfig'

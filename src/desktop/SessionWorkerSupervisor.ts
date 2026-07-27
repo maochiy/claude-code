@@ -7,6 +7,7 @@ import type {
   WorkerCommandMessage,
   WorkerEventMessage,
 } from './protocol/types.js'
+import { DESKTOP_PROTOCOL_VERSION } from './protocol/types.js'
 import {
   buildDesktopWorkerEnvironment,
   redactRuntimeSecrets,
@@ -225,7 +226,7 @@ export class SessionWorkerSupervisor {
         const currentSessionId = slot.sessionId
         if (currentSessionId) {
           this.emitSequenced(currentSessionId, {
-            protocolVersion: 1,
+            protocolVersion: DESKTOP_PROTOCOL_VERSION,
             requestId: `invalid-worker-event-${this.dependencies.now()}`,
             sessionId: currentSessionId,
             timestamp: this.dependencies.now(),
@@ -257,7 +258,7 @@ export class SessionWorkerSupervisor {
       const currentSessionId = slot.sessionId
       if (currentSessionId) {
         this.emitSequenced(currentSessionId, {
-          protocolVersion: 1,
+          protocolVersion: DESKTOP_PROTOCOL_VERSION,
           requestId: `log-${this.dependencies.now()}`,
           sessionId: currentSessionId,
           timestamp: this.dependencies.now(),
@@ -266,7 +267,7 @@ export class SessionWorkerSupervisor {
         return
       }
       this.emit({
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId: `host-log-${this.dependencies.now()}`,
         timestamp: this.dependencies.now(),
         payload: { type: 'runtime.log', level: 'error', message },
@@ -300,7 +301,7 @@ export class SessionWorkerSupervisor {
     }
 
     this.emitSequenced(sessionId, {
-      protocolVersion: 1,
+      protocolVersion: DESKTOP_PROTOCOL_VERSION,
       requestId: `crash-${this.dependencies.now()}`,
       sessionId,
       timestamp: this.dependencies.now(),
@@ -356,6 +357,10 @@ export class SessionWorkerSupervisor {
       this.send(slot, envelope)
       return
     }
+    if (envelope.payload.type === 'session.resolveModelCatalog') {
+      this.send(slot, envelope)
+      return
+    }
     if (!slot.initialized) {
       slot.commandQueue.push(envelope)
       return
@@ -407,7 +412,7 @@ export class SessionWorkerSupervisor {
     if (!sessionId) return
     this.workers.delete(sessionId)
     this.emitSequenced(sessionId, {
-      protocolVersion: 1,
+      protocolVersion: DESKTOP_PROTOCOL_VERSION,
       requestId: `suspend-${this.dependencies.now()}`,
       sessionId,
       timestamp: this.dependencies.now(),

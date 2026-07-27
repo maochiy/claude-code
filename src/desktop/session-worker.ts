@@ -9,6 +9,7 @@ import {
   forkRuntimeTranscript,
   resolveRewindUserMessageUuid,
 } from './bootstrap/session-transcript.js'
+import { resolveDesktopModelCatalog } from './models/modelCatalog.js'
 import type { ClaudeCodeDesktopHostBridge } from './bridge/DesktopHostBridge.js'
 import {
   DESKTOP_PROTOCOL_VERSION,
@@ -172,6 +173,25 @@ async function handleCommand(
 ): Promise<void> {
   const command = envelope.payload
   switch (command.type) {
+    case 'session.resolveModelCatalog':
+      if (session) {
+        throw new Error(
+          '已打开的 Session 不能切换 Provider 配置，请先关闭或重新打开 Session',
+        )
+      }
+      sessionId = envelope.sessionId
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: resolveDesktopModelCatalog(
+            command.environment,
+            command.providerConfiguration,
+          ),
+        },
+        envelope.requestId,
+      )
+      return
     case 'session.open':
     case 'session.resume': {
       sessionId = envelope.sessionId

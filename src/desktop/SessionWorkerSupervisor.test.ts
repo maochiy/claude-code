@@ -7,6 +7,7 @@ import type {
   WorkerCommandMessage,
   WorkerEventMessage,
 } from './protocol/types.js'
+import { DESKTOP_PROTOCOL_VERSION } from './protocol/types.js'
 import {
   SessionWorkerSupervisor,
   type SessionWorkerProcess,
@@ -45,7 +46,7 @@ class FakeWorkerProcess extends EventEmitter implements SessionWorkerProcess {
     const message: WorkerEventMessage = {
       kind: 'event',
       envelope: {
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId,
         sessionId,
         timestamp: 1,
@@ -113,7 +114,7 @@ class SupervisorHarness {
     requestId = `${sessionId}-${payload.type}`,
   ): RuntimeEnvelope<RuntimeCommand> {
     return {
-      protocolVersion: 1,
+      protocolVersion: DESKTOP_PROTOCOL_VERSION,
       requestId,
       sessionId,
       timestamp: this.now,
@@ -214,6 +215,27 @@ describe('SessionWorkerSupervisor', () => {
       'turn.start',
       'turn.enqueue',
     ])
+  })
+
+  test('模型目录解析命令可在 Session 初始化前立即发送', async () => {
+    const harness = new SupervisorHarness()
+    await harness.supervisor.dispatch(
+      harness.command('session-a', {
+        type: 'session.resolveModelCatalog',
+        environment: {
+          variables: {},
+          configDir: '/tmp/session-a/config',
+        },
+        providerConfiguration: {
+          modelType: 'anthropic',
+          models: [{ id: 'claude-sonnet-4-6' }],
+        },
+      }),
+    )
+
+    expect(
+      harness.activeWorker(0).sent.map(item => item.envelope.payload.type),
+    ).toEqual(['session.resolveModelCatalog'])
   })
 
   test('达到并发上限时新 Session 等待，已有 Worker 退出后自动接续', async () => {

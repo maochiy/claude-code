@@ -144,6 +144,67 @@ describe('Desktop Runtime protocol validation', () => {
     ).not.toThrow()
   })
 
+  test('接受由 Desktop Worker 解析模型目录的命令', () => {
+    expect(() =>
+      assertCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.resolveModelCatalog',
+            environment: {
+              variables: { OPENAI_API_KEY: 'test-key' },
+              configDir: '/tmp/ccb-config',
+            },
+            providerConfiguration: {
+              modelType: 'openai',
+              defaultModel: 'gpt-5.4',
+              models: [
+                {
+                  id: 'gpt-5.4',
+                  name: 'GPT-5.4',
+                  contextWindow: 400_000,
+                  effortLevels: ['low', 'medium', 'high', 'xhigh'],
+                },
+              ],
+            },
+          },
+          'catalog-session',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('拒绝模型目录中的非法思考等级', () => {
+    const envelope = commandEnvelope(
+      {
+        type: 'session.resolveModelCatalog',
+        environment: {
+          variables: {},
+          configDir: '/tmp/ccb-config',
+        },
+        providerConfiguration: {
+          modelType: 'openai',
+          models: [{ id: 'gpt-5.4', effortLevels: ['high'] }],
+        },
+      },
+      'catalog-session',
+    ) as unknown as {
+      protocolVersion: number
+      requestId: string
+      sessionId: string
+      timestamp: number
+      payload: {
+        type: 'session.resolveModelCatalog'
+        environment: { variables: Record<string, string>; configDir: string }
+        providerConfiguration: {
+          modelType: 'openai'
+          models: Array<{ id: string; effortLevels: string[] }>
+        }
+      }
+    }
+    envelope.payload.providerConfiguration.models[0]!.effortLevels = ['ultra']
+    expect(() => assertCommandEnvelope(envelope)).toThrow('effortLevels')
+  })
+
   test('拒绝非法的 Session 思考等级', () => {
     const envelope = commandEnvelope(
       { type: 'session.setEffortLevel', level: 'high' },

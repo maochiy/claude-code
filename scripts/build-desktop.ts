@@ -19,6 +19,7 @@ import type {
   DesktopCapabilityManifest,
   RuntimeCapabilitySet,
 } from '../src/desktop/protocol/types.js'
+import { DESKTOP_PROTOCOL_VERSION } from '../src/desktop/protocol/types.js'
 import { assertCapabilityParity } from '../src/desktop/capabilities/manifest.js'
 import { DESKTOP_PROTOCOL_JSON_SCHEMA } from '../src/desktop/protocol/schema.js'
 
@@ -176,7 +177,7 @@ await writeFile(
       gitCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
         encoding: 'utf8',
       }).trim(),
-      protocolVersion: 1,
+      protocolVersion: DESKTOP_PROTOCOL_VERSION,
       platform: process.platform,
       arch: process.arch,
       buildTime: new Date().toISOString(),

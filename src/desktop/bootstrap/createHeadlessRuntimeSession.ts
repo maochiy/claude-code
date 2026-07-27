@@ -5,7 +5,6 @@ import { QueryEngine } from '../../QueryEngine.js'
 import { getCommands } from '../../commands.js'
 import { initBuiltinPlugins } from '../../plugins/bundled/index.js'
 import { setChatGPTCredentialsUpdateHandler } from '../../services/api/openai/chatgptAuth.js'
-import { clearOpenAIClientCache } from '../../services/api/openai/client.js'
 import { getMcpToolsCommandsAndResources } from '../../services/mcp/client.js'
 import type {
   MCPServerConnection,
@@ -29,9 +28,7 @@ import type {
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { enableConfigs } from '../../utils/config.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
-import { applySafeConfigEnvironmentVariables } from '../../utils/managedEnv.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
-import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { loadConversationForResume } from '../../utils/conversationRecovery.js'
 import {
   restoreSessionStateFromLog,
@@ -52,8 +49,7 @@ import type {
   RuntimeInteractionResponse,
   RuntimeSessionOptions,
 } from '../protocol/types.js'
-
-let injectedEnvironmentKeys = new Set<string>()
+import { applyDesktopRuntimeConfiguration } from './runtimeConfiguration.js'
 
 export interface HeadlessRuntimeSession {
   readonly runtimeSessionId: string
@@ -132,14 +128,10 @@ export async function createHeadlessRuntimeSession(
   initBuiltinPlugins()
   initBundledSkills()
 
-  for (const name of injectedEnvironmentKeys) delete process.env[name]
-  injectedEnvironmentKeys = new Set(Object.keys(options.environment.variables))
-  for (const [name, value] of Object.entries(options.environment.variables)) {
-    process.env[name] = value
-  }
-  process.env.CLAUDE_CONFIG_DIR = options.environment.configDir
-  process.env.CLAUDE_CODE_ENTRYPOINT = 'desktop-runtime'
-  clearOpenAIClientCache()
+  applyDesktopRuntimeConfiguration(
+    options.environment,
+    options.providerConfiguration,
+  )
   setChatGPTCredentialsUpdateHandler(credentials => {
     bridge.emitCredentialsUpdated(credentials)
   })
@@ -148,8 +140,6 @@ export async function createHeadlessRuntimeSession(
   switchSession(runtimeSessionId as SessionId)
   setOriginalCwd(options.cwd)
   process.chdir(options.cwd)
-  resetSettingsCache()
-  applySafeConfigEnvironmentVariables()
 
   const permissionContext = getEmptyToolPermissionContext()
   permissionContext.mode = options.permissionMode as PermissionMode

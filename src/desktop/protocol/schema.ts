@@ -74,6 +74,30 @@ const thinkingConfig: JsonSchema = {
 const effortLevel: JsonSchema = {
   enum: ['low', 'medium', 'high', 'xhigh', 'max'],
 }
+const configuredModel = objectSchema(
+  {
+    id: nonEmptyString,
+    name: nonEmptyString,
+    description: nonEmptyString,
+    contextWindow: { type: 'integer', minimum: 1 },
+    effortLevels: {
+      type: 'array',
+      items: effortLevel,
+    },
+  },
+  ['id'],
+)
+const providerConfiguration = objectSchema(
+  {
+    modelType: { enum: ['anthropic', 'openai', 'gemini', 'grok'] },
+    defaultModel: nonEmptyString,
+    models: {
+      type: 'array',
+      items: configuredModel,
+    },
+  },
+  ['modelType', 'models'],
+)
 const environment = objectSchema(
   {
     variables: {
@@ -95,6 +119,7 @@ const sessionOptions = objectSchema(
     effortLevel,
     permissionMode,
     environment,
+    providerConfiguration,
     mcpServers: { type: 'object' },
     systemPrompt: nonEmptyString,
     appendSystemPrompt: nonEmptyString,
@@ -235,6 +260,14 @@ const commandPayload: JsonSchema = {
     payloadSchema('session.suspend'),
     payloadSchema('session.close'),
     payloadSchema('session.getState'),
+    payloadSchema(
+      'session.resolveModelCatalog',
+      {
+        environment,
+        providerConfiguration,
+      },
+      ['environment', 'providerConfiguration'],
+    ),
     payloadSchema('session.setPermissionMode', { mode: permissionMode }, [
       'mode',
     ]),

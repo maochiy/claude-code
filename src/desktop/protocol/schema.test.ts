@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import Ajv2020 from 'ajv/dist/2020.js'
 import { DESKTOP_PROTOCOL_JSON_SCHEMA } from './schema.js'
+import { DESKTOP_PROTOCOL_VERSION } from './types.js'
 
 const validate = new Ajv2020({
   allErrors: true,
@@ -11,7 +12,7 @@ describe('Desktop Runtime protocol JSON Schema', () => {
   test('完整 command union 可通过 Schema', () => {
     expect(
       validate({
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId: 'request-1',
         sessionId: 'session-1',
         timestamp: Date.now(),
@@ -26,7 +27,7 @@ describe('Desktop Runtime protocol JSON Schema', () => {
   test('未知 payload type 被 Schema 拒绝', () => {
     expect(
       validate({
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId: 'request-1',
         timestamp: Date.now(),
         payload: {
@@ -39,7 +40,7 @@ describe('Desktop Runtime protocol JSON Schema', () => {
   test('缺少 command 必填字段被 Schema 拒绝', () => {
     expect(
       validate({
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId: 'request-1',
         sessionId: 'session-1',
         timestamp: Date.now(),
@@ -53,7 +54,7 @@ describe('Desktop Runtime protocol JSON Schema', () => {
   test('完整 event union 可通过 Schema', () => {
     expect(
       validate({
-        protocolVersion: 1,
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
         requestId: 'event-1',
         sessionId: 'session-1',
         sequence: 1,
