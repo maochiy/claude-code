@@ -4,6 +4,7 @@ set -Eeuo pipefail
 REGISTRY="${NEXUS_NPM_REGISTRY:-https://test-ai.xiujiadian.com/zhuxiangwei-macmini-nexus/repository/npm-hosted/}"
 PACKAGE_FILE="${1:-}"
 USE_EXISTING_AUTH="${NEXUS_USE_EXISTING_AUTH:-0}"
+PACK_CREATED=0
 TEMP_NPMRC=""
 
 cleanup() {
@@ -27,7 +28,19 @@ if [[ -z "$PACKAGE_FILE" ]]; then
   shopt -u nullglob
 
   case "${#packages[@]}" in
-    0) fail "当前目录没有 claude-code-best-*.tgz，请传入 tarball 路径" ;;
+    0)
+      printf '当前目录没有 tarball，执行 npm pack...\n'
+      PACKAGE_FILE="$(npm pack --json --ignore-scripts | node -e '
+        let input = ""
+        process.stdin.on("data", chunk => { input += chunk })
+        process.stdin.on("end", () => {
+          const result = JSON.parse(input)
+          if (!Array.isArray(result) || !result[0]?.filename) process.exit(1)
+          process.stdout.write(result[0].filename)
+        })
+      ')" || fail 'npm pack 失败或无法确定生成的 tarball 文件'
+      PACK_CREATED=1
+      ;;
     1) PACKAGE_FILE="${packages[0]}" ;;
     *) fail "当前目录找到多个 tarball，请明确传入文件，例如: $0 ./claude-code-best-2.8.6.tgz" ;;
   esac
@@ -74,4 +87,10 @@ npm whoami --registry="$REGISTRY" >/dev/null \
 
 printf '认证成功，开始发布...\n'
 npm publish "$PACKAGE_FILE" --registry="$REGISTRY"
+
+if [[ "$PACK_CREATED" == "1" ]]; then
+  rm -f -- "$PACKAGE_FILE"
+  printf '已清理自动生成的 tarball。\n'
+fi
+
 printf '\n发布完成。\n'
