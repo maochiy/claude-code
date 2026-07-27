@@ -25,8 +25,13 @@ command -v npm >/dev/null 2>&1 || fail "未找到 npm，请先在服务器安装
 cd "$PROJECT_ROOT"
 
 if [[ -z "$PACKAGE_FILE" ]]; then
-  printf '使用 npm pack 构建最新 tarball...\n'
-  PACKAGE_FILE="$(npm pack --json | node -e '
+  printf '先执行 npm run build:vite，生成最新 dist 入口...\n'
+  npm run build:vite || fail '构建失败，未发布 npm 包'
+  [[ -f dist/cli-node.js ]] || fail '构建完成但缺少 dist/cli-node.js'
+  [[ -f dist/cli-bun.js ]] || fail '构建完成但缺少 dist/cli-bun.js'
+
+  printf '使用 npm pack 打包最新 tarball...\n'
+  PACKAGE_FILE="$(npm pack --ignore-scripts --json | node -e '
     let input = ""
     process.stdin.on("data", chunk => { input += chunk })
     process.stdin.on("end", () => {
