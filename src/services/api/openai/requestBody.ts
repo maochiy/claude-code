@@ -5,6 +5,29 @@
  */
 import type { ChatCompletionCreateParamsStreaming } from 'openai/resources/chat/completions/completions.mjs'
 import { isEnvTruthy, isEnvDefinedFalsy } from '../../../utils/envUtils.js'
+import type { EffortValue } from '../../../utils/effort.js'
+
+export type OpenAIChatReasoningEffort = 'low' | 'medium' | 'high'
+
+/**
+ * Chat Completions 兼容端点通常只接受 low/medium/high。
+ * CCB 的 xhigh/max 与数值档位在该协议下安全降级为 high。
+ */
+export function normalizeOpenAIChatReasoningEffort(
+  effortValue: EffortValue | undefined,
+): OpenAIChatReasoningEffort | undefined {
+  if (effortValue === 'low') return 'low'
+  if (effortValue === 'medium') return 'medium'
+  if (
+    effortValue === 'high'
+    || effortValue === 'xhigh'
+    || effortValue === 'max'
+    || typeof effortValue === 'number'
+  ) {
+    return 'high'
+  }
+  return undefined
+}
 
 /**
  * Detect whether thinking mode should be enabled for this model.
@@ -73,12 +96,14 @@ export function buildOpenAIRequestBody(params: {
   tools: any[]
   toolChoice: any
   enableThinking: boolean
+  reasoningEffort?: OpenAIChatReasoningEffort
   maxTokens: number
   temperatureOverride?: number
 }): ChatCompletionCreateParamsStreaming & {
   thinking?: { type: string }
   enable_thinking?: boolean
   chat_template_kwargs?: { thinking: boolean; enable_thinking: boolean }
+  reasoning_effort?: OpenAIChatReasoningEffort
 } {
   const {
     model,
@@ -86,6 +111,7 @@ export function buildOpenAIRequestBody(params: {
     tools,
     toolChoice,
     enableThinking,
+    reasoningEffort,
     maxTokens,
     temperatureOverride,
   } = params
@@ -99,6 +125,7 @@ export function buildOpenAIRequestBody(params: {
     }),
     stream: true,
     stream_options: { include_usage: true },
+    ...(reasoningEffort && { reasoning_effort: reasoningEffort }),
     // Enable chain-of-thought output for DeepSeek and MiMo models.
     // When active, temperature/top_p/presence_penalty/frequency_penalty are ignored.
     ...(enableThinking && {
