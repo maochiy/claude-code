@@ -10,6 +10,7 @@ import {
   resolveRewindUserMessageUuid,
 } from './bootstrap/session-transcript.js'
 import { resolveDesktopModelCatalog } from './models/modelCatalog.js'
+import { resolveDesktopSkillCatalog } from './skills/skillCatalog.js'
 import type { ClaudeCodeDesktopHostBridge } from './bridge/DesktopHostBridge.js'
 import {
   DESKTOP_PROTOCOL_VERSION,
@@ -188,6 +189,22 @@ async function handleCommand(
             command.environment,
             command.providerConfiguration,
           ),
+        },
+        envelope.requestId,
+      )
+      return
+    case 'session.resolveSkillCatalog':
+      if (session) {
+        throw new Error(
+          '已打开的 Session 不能重新解析 Skill Catalog，请先关闭 Session',
+        )
+      }
+      sessionId = envelope.sessionId
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: await resolveDesktopSkillCatalog(command.options),
         },
         envelope.requestId,
       )

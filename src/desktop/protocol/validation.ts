@@ -188,6 +188,12 @@ function assertSessionOptions(
 ): asserts value is RuntimeSessionOptions {
   assertRecord(value, path)
   assertString(value.cwd, `${path}.cwd`)
+  if (value.additionalSkillDirectories !== undefined) {
+    assertStringArray(
+      value.additionalSkillDirectories,
+      `${path}.additionalSkillDirectories`,
+    )
+  }
   assertOptionalString(value.runtimeSessionId, `${path}.runtimeSessionId`)
   assertOptionalBoolean(value.resume, `${path}.resume`)
   assertOptionalString(value.model, `${path}.model`)
@@ -393,6 +399,10 @@ export function assertCommandEnvelope(
     case 'session.getState':
     case 'turn.stop':
       assertSessionId(value)
+      return
+    case 'session.resolveSkillCatalog':
+      assertSessionId(value)
+      assertSessionOptions(payload.options, `${payload.type}.options`)
       return
     case 'session.resolveModelCatalog':
       assertSessionId(value)

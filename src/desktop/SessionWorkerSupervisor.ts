@@ -357,7 +357,10 @@ export class SessionWorkerSupervisor {
       this.send(slot, envelope)
       return
     }
-    if (envelope.payload.type === 'session.resolveModelCatalog') {
+    if (
+      envelope.payload.type === 'session.resolveModelCatalog' ||
+      envelope.payload.type === 'session.resolveSkillCatalog'
+    ) {
       this.send(slot, envelope)
       return
     }

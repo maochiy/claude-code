@@ -238,6 +238,28 @@ describe('SessionWorkerSupervisor', () => {
     ).toEqual(['session.resolveModelCatalog'])
   })
 
+  test('Skill Catalog 解析命令可在 Session 初始化前立即发送', async () => {
+    const harness = new SupervisorHarness()
+    await harness.supervisor.dispatch(
+      harness.command('skill-catalog-session', {
+        type: 'session.resolveSkillCatalog',
+        options: {
+          cwd: '/tmp/project',
+          additionalSkillDirectories: ['/tmp/proma-skills'],
+          permissionMode: 'default',
+          environment: {
+            variables: {},
+            configDir: '/tmp/session-a/config',
+          },
+        },
+      }),
+    )
+
+    expect(
+      harness.activeWorker(0).sent.map(item => item.envelope.payload.type),
+    ).toEqual(['session.resolveSkillCatalog'])
+  })
+
   test('达到并发上限时新 Session 等待，已有 Worker 退出后自动接续', async () => {
     const harness = new SupervisorHarness(2)
     await harness.supervisor.dispatch(harness.open('session-a'))

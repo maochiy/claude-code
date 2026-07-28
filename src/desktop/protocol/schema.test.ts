@@ -24,6 +24,26 @@ describe('Desktop Runtime protocol JSON Schema', () => {
     ).toBe(true)
   })
 
+  test('Skill Catalog command 可通过 Schema', () => {
+    expect(
+      validate({
+        protocolVersion: DESKTOP_PROTOCOL_VERSION,
+        requestId: 'request-skill-catalog',
+        sessionId: 'skill-catalog-session',
+        timestamp: Date.now(),
+        payload: {
+          type: 'session.resolveSkillCatalog',
+          options: {
+            cwd: '/tmp/project',
+            additionalSkillDirectories: ['/tmp/proma-skills'],
+            permissionMode: 'default',
+            environment: { variables: {}, configDir: '/tmp/ccb' },
+          },
+        },
+      }),
+    ).toBe(true)
+  })
+
   test('未知 payload type 被 Schema 拒绝', () => {
     expect(
       validate({

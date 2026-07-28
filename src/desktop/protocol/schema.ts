@@ -111,6 +111,7 @@ const environment = objectSchema(
 const sessionOptions = objectSchema(
   {
     cwd: nonEmptyString,
+    additionalSkillDirectories: stringArray,
     runtimeSessionId: nonEmptyString,
     resume: { type: 'boolean' },
     model: nonEmptyString,
@@ -267,6 +268,11 @@ const commandPayload: JsonSchema = {
         providerConfiguration,
       },
       ['environment', 'providerConfiguration'],
+    ),
+    payloadSchema(
+      'session.resolveSkillCatalog',
+      { options: sessionOptions },
+      ['options'],
     ),
     payloadSchema('session.setPermissionMode', { mode: permissionMode }, [
       'mode',

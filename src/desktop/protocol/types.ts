@@ -2,7 +2,7 @@ import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { EffortLevel } from '../../utils/effort.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 2
+export const DESKTOP_PROTOCOL_VERSION = 3
 export const DESKTOP_RUNTIME_NAME = 'claude-code-best'
 
 export type DesktopPermissionMode =
@@ -61,6 +61,7 @@ export interface RuntimeModelCatalog {
 
 export interface RuntimeSessionOptions {
   cwd: string
+  additionalSkillDirectories?: string[]
   runtimeSessionId?: string
   resume?: boolean
   model?: string
@@ -78,6 +79,34 @@ export interface RuntimeSessionOptions {
   includePartialMessages?: boolean
 }
 
+export type RuntimeSkillSource =
+  | 'ccb-bundled'
+  | 'ccb-user'
+  | 'ccb-project'
+  | 'ccb-plugin'
+  | 'ccb-managed'
+  | 'proma-project'
+  | 'unknown'
+
+export interface RuntimeSkillInfo {
+  id: string
+  name: string
+  description?: string
+  source: RuntimeSkillSource
+  path?: string
+  enabled: boolean
+  userInvocable: boolean
+  modelInvocable: boolean
+  pluginName?: string
+  shadowedBy?: string
+}
+
+export interface RuntimeSkillCatalog {
+  projectPath: string
+  skills: RuntimeSkillInfo[]
+  resolvedAt: number
+}
+
 export type RuntimeCommand =
   | { type: 'host.initialize'; expectedRuntimeVersion?: string }
   | { type: 'host.getCapabilities' }
@@ -92,6 +121,7 @@ export type RuntimeCommand =
       environment: RuntimeEnvironment
       providerConfiguration: RuntimeProviderConfiguration
     }
+  | { type: 'session.resolveSkillCatalog'; options: RuntimeSessionOptions }
   | { type: 'session.setPermissionMode'; mode: DesktopPermissionMode }
   | {
       type: 'session.updateConfig'

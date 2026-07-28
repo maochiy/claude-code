@@ -173,6 +173,28 @@ describe('Desktop Runtime protocol validation', () => {
     ).not.toThrow()
   })
 
+  test('接受宿主 Skills 目录的 Skill Catalog 命令', () => {
+    expect(() =>
+      assertCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.resolveSkillCatalog',
+            options: {
+              cwd: '/tmp/project',
+              additionalSkillDirectories: ['/tmp/proma-skills'],
+              permissionMode: 'default',
+              environment: {
+                variables: {},
+                configDir: '/tmp/ccb-config',
+              },
+            },
+          },
+          'skill-catalog-session',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
   test('拒绝模型目录中的非法思考等级', () => {
     const envelope = commandEnvelope(
       {

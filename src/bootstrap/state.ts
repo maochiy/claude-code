@@ -205,6 +205,8 @@ type State = {
   lastEmittedDate: string | null
   // Additional directories from --add-dir flag (for CLAUDE.md loading)
   additionalDirectoriesForClaudeMd: string[]
+  // Desktop host-provided Skill directories (each directly contains skill-name/SKILL.md)
+  additionalSkillDirectories: string[]
   // Channel server allowlist from --channels flag (servers whose channel
   // notifications should register this session). Parsed once in main.tsx —
   // the tag decides trust model: 'plugin' → marketplace verification +
@@ -396,6 +398,8 @@ function getInitialState(): State {
     lastEmittedDate: null,
     // Additional directories from --add-dir flag (for CLAUDE.md loading)
     additionalDirectoriesForClaudeMd: [],
+    // Desktop host-provided Skill directories
+    additionalSkillDirectories: [],
     // Channel server allowlist from --channels flag
     allowedChannels: [],
     hasDevChannels: false,
@@ -1657,6 +1661,14 @@ export function setAdditionalDirectoriesForClaudeMd(
   directories: string[],
 ): void {
   STATE.additionalDirectoriesForClaudeMd = directories
+}
+
+export function getAdditionalSkillDirectories(): string[] {
+  return STATE.additionalSkillDirectories
+}
+
+export function setAdditionalSkillDirectories(directories: string[]): void {
+  STATE.additionalSkillDirectories = directories
 }
 
 export function getAllowedChannels(): ChannelEntry[] {

@@ -2,7 +2,7 @@ import { randomUUID, type UUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import { QueryEngine } from '../../QueryEngine.js'
-import { getCommands } from '../../commands.js'
+import { clearCommandsCache, getCommands } from '../../commands.js'
 import { initBuiltinPlugins } from '../../plugins/bundled/index.js'
 import { setChatGPTCredentialsUpdateHandler } from '../../services/api/openai/chatgptAuth.js'
 import { getMcpToolsCommandsAndResources } from '../../services/mcp/client.js'
@@ -38,7 +38,11 @@ import {
   resetSessionFilePointer,
   restoreSessionMetadata,
 } from '../../utils/sessionStorage.js'
-import { setOriginalCwd, switchSession } from '../../bootstrap/state.js'
+import {
+  setAdditionalSkillDirectories,
+  setOriginalCwd,
+  switchSession,
+} from '../../bootstrap/state.js'
 import type { SessionId } from '../../types/ids.js'
 import type { EffortLevel } from '../../utils/effort.js'
 import { getAgentDefinitionsWithOverrides } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
@@ -138,6 +142,8 @@ export async function createHeadlessRuntimeSession(
   switchSession(runtimeSessionId as SessionId)
   setOriginalCwd(options.cwd)
   process.chdir(options.cwd)
+  setAdditionalSkillDirectories(options.additionalSkillDirectories ?? [])
+  clearCommandsCache()
 
   const permissionContext = getEmptyToolPermissionContext()
   permissionContext.mode = options.permissionMode as PermissionMode
