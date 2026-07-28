@@ -42,6 +42,7 @@ const SESSION_OPERATIONS = [
   'resume',
   'suspend',
   'close',
+  'delete',
   'compact',
   'fork',
   'rewind',

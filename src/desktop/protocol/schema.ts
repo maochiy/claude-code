@@ -264,15 +264,50 @@ const commandPayload: JsonSchema = {
     payloadSchema(
       'session.resolveModelCatalog',
       {
+        cwd: nonEmptyString,
         environment,
         providerConfiguration,
       },
-      ['environment', 'providerConfiguration'],
+      ['cwd', 'environment', 'providerConfiguration'],
     ),
     payloadSchema(
       'session.resolveSkillCatalog',
       { options: sessionOptions },
       ['options'],
+    ),
+    payloadSchema(
+      'session.list',
+      {
+        cwd: nonEmptyString,
+        environment,
+        limit: { type: 'integer', minimum: 1 },
+        offset: { type: 'integer', minimum: 0 },
+      },
+      ['cwd', 'environment'],
+    ),
+    payloadSchema(
+      'session.getTranscript',
+      {
+        cwd: nonEmptyString,
+        environment,
+        runtimeSessionId: nonEmptyString,
+      },
+      ['cwd', 'environment', 'runtimeSessionId'],
+    ),
+    payloadSchema(
+      'session.delete',
+      {
+        cwd: nonEmptyString,
+        environment,
+        runtimeSessionId: nonEmptyString,
+      },
+      ['cwd', 'environment', 'runtimeSessionId'],
+    ),
+    payloadSchema('session.getExecutionGraph'),
+    payloadSchema(
+      'session.getSubagentTranscript',
+      { executionNodeId: nonEmptyString },
+      ['executionNodeId'],
     ),
     payloadSchema('session.setPermissionMode', { mode: permissionMode }, [
       'mode',
@@ -370,6 +405,22 @@ const eventPayload: JsonSchema = {
       ['state'],
     ),
     payloadSchema('runtime.message', { message: sdkMessage }, ['message']),
+    payloadSchema(
+      'runtime.executionGraphChanged',
+      {
+        graph: objectSchema(
+          {
+            runtimeSessionId: nonEmptyString,
+            nodes: { type: 'array', items: { type: 'object' } },
+            todos: { type: 'array', items: { type: 'object' } },
+            updatedAt: { type: 'number' },
+          },
+          ['nodes', 'todos', 'updatedAt'],
+          true,
+        ),
+      },
+      ['graph'],
+    ),
     payloadSchema(
       'runtime.progress',
       {

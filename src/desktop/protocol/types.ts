@@ -2,7 +2,7 @@ import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { EffortLevel } from '../../utils/effort.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 3
+export const DESKTOP_PROTOCOL_VERSION = 5
 export const DESKTOP_RUNTIME_NAME = 'claude-code-best'
 
 export type DesktopPermissionMode =
@@ -57,6 +57,83 @@ export interface RuntimeModelInfo {
 export interface RuntimeModelCatalog {
   defaultModel?: string
   models: RuntimeModelInfo[]
+}
+
+export interface RuntimeSessionSummary {
+  runtimeSessionId: string
+  title: string
+  summary: string
+  cwd: string
+  createdAt?: number
+  updatedAt: number
+  messageCount?: number
+  gitBranch?: string
+  tag?: string
+}
+
+export interface RuntimeSessionCatalog {
+  cwd: string
+  sessions: RuntimeSessionSummary[]
+  nextOffset?: number
+}
+
+export interface RuntimeSessionTranscript {
+  runtimeSessionId: string
+  cwd: string
+  messages: SDKMessage[]
+}
+
+export type RuntimeExecutionNodeKind =
+  | 'subagent'
+  | 'teammate'
+  | 'workflow-agent'
+  | 'background-task'
+  | 'shell'
+
+export type RuntimeExecutionNodeStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+
+export interface RuntimeExecutionNode {
+  id: string
+  parentId?: string
+  kind: RuntimeExecutionNodeKind
+  name?: string
+  status: RuntimeExecutionNodeStatus
+  description: string
+  startedAt?: number
+  completedAt?: number
+  toolUseId?: string
+  transcriptAvailable: boolean
+  summary?: string
+  model?: string
+  agentType?: string
+  teamName?: string
+}
+
+export interface RuntimeTodoItem {
+  id: string
+  content: string
+  status: string
+  activeForm?: string
+  owner?: string
+  blocks?: string[]
+  blockedBy?: string[]
+}
+
+export interface RuntimeExecutionGraph {
+  runtimeSessionId?: string
+  nodes: RuntimeExecutionNode[]
+  todos: RuntimeTodoItem[]
+  updatedAt: number
+}
+
+export interface RuntimeSubagentTranscript {
+  executionNodeId: string
+  messages: SDKMessage[]
 }
 
 export interface RuntimeSessionOptions {
@@ -118,10 +195,32 @@ export type RuntimeCommand =
   | { type: 'session.getState' }
   | {
       type: 'session.resolveModelCatalog'
+      cwd: string
       environment: RuntimeEnvironment
       providerConfiguration: RuntimeProviderConfiguration
     }
   | { type: 'session.resolveSkillCatalog'; options: RuntimeSessionOptions }
+  | {
+      type: 'session.list'
+      cwd: string
+      environment: RuntimeEnvironment
+      limit?: number
+      offset?: number
+    }
+  | {
+      type: 'session.getTranscript'
+      cwd: string
+      environment: RuntimeEnvironment
+      runtimeSessionId: string
+    }
+  | {
+      type: 'session.delete'
+      cwd: string
+      environment: RuntimeEnvironment
+      runtimeSessionId: string
+    }
+  | { type: 'session.getExecutionGraph' }
+  | { type: 'session.getSubagentTranscript'; executionNodeId: string }
   | { type: 'session.setPermissionMode'; mode: DesktopPermissionMode }
   | {
       type: 'session.updateConfig'
@@ -245,6 +344,7 @@ export type RuntimeEvent =
       runtimeSessionId?: string
     }
   | { type: 'runtime.message'; message: SDKMessage }
+  | { type: 'runtime.executionGraphChanged'; graph: RuntimeExecutionGraph }
   | {
       type: 'runtime.progress'
       phase: string

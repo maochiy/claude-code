@@ -14,6 +14,7 @@ describe('Desktop Runtime 模型目录', () => {
   test('未打开 Session 时先完成配置 Bootstrap，再由 CCB 内核解析模型目录', () => {
     process.env.NODE_ENV = 'production'
     const catalog = resolveDesktopModelCatalog(
+      process.cwd(),
       {
         variables: {
           CLAUDE_CODE_USE_OPENAI: '1',
@@ -45,6 +46,7 @@ describe('Desktop Runtime 模型目录', () => {
 
   test('模型 ID 的 1M 标记由 CCB 配置解析并返回真实上下文窗口', () => {
     const catalog = resolveDesktopModelCatalog(
+      process.cwd(),
       {
         variables: {
           ANTHROPIC_API_KEY: 'test-key',

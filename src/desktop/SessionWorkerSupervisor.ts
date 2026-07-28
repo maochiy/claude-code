@@ -58,6 +58,7 @@ interface WorkerSlot {
   stopping: boolean
   lastOpenEnvelope?: RuntimeEnvelope<RuntimeCommand>
   commandQueue: RuntimeEnvelope<RuntimeCommand>[]
+  statelessRequestIds: Set<string>
 }
 
 function createDefaultDependencies(): SessionWorkerSupervisorDependencies {
@@ -184,6 +185,7 @@ export class SessionWorkerSupervisor {
     slot.busy = false
     slot.stopping = false
     slot.commandQueue.length = 0
+    slot.statelessRequestIds.clear()
     this.workers.set(sessionId, slot)
     this.ensurePrewarmedWorker()
     return slot
@@ -206,6 +208,7 @@ export class SessionWorkerSupervisor {
       busy: false,
       stopping: false,
       commandQueue: [],
+      statelessRequestIds: new Set(),
     }
 
     child.on('message', (value: unknown) => {
@@ -251,6 +254,14 @@ export class SessionWorkerSupervisor {
         }
       }
       this.emitSequenced(currentSessionId, envelope)
+      if (
+        (envelope.payload.type === 'response.success' ||
+          envelope.payload.type === 'response.failure') &&
+        slot.statelessRequestIds.delete(envelope.payload.responseTo) &&
+        slot.statelessRequestIds.size === 0
+      ) {
+        this.retireStatelessWorker(slot)
+      }
     })
 
     child.stderr?.on('data', chunk => {
@@ -359,8 +370,12 @@ export class SessionWorkerSupervisor {
     }
     if (
       envelope.payload.type === 'session.resolveModelCatalog' ||
-      envelope.payload.type === 'session.resolveSkillCatalog'
+      envelope.payload.type === 'session.resolveSkillCatalog' ||
+      envelope.payload.type === 'session.list' ||
+      envelope.payload.type === 'session.getTranscript' ||
+      envelope.payload.type === 'session.delete'
     ) {
+      slot.statelessRequestIds.add(envelope.requestId)
       this.send(slot, envelope)
       return
     }
@@ -406,6 +421,15 @@ export class SessionWorkerSupervisor {
     return [...this.workers.values()]
       .filter(item => !item.process.killed && !item.busy && !item.stopping)
       .sort((a, b) => a.lastActiveAt - b.lastActiveAt)[0]
+  }
+
+  private retireStatelessWorker(slot: WorkerSlot): void {
+    if (slot.stopping) return
+    slot.stopping = true
+    const sessionId = slot.sessionId
+    if (sessionId) this.workers.delete(sessionId)
+    slot.process.kill('SIGTERM')
+    this.drainPending()
   }
 
   private retireWorker(slot: WorkerSlot): void {

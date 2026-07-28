@@ -222,6 +222,7 @@ describe('SessionWorkerSupervisor', () => {
     await harness.supervisor.dispatch(
       harness.command('session-a', {
         type: 'session.resolveModelCatalog',
+        cwd: '/tmp/project',
         environment: {
           variables: {},
           configDir: '/tmp/session-a/config',
@@ -236,6 +237,59 @@ describe('SessionWorkerSupervisor', () => {
     expect(
       harness.activeWorker(0).sent.map(item => item.envelope.payload.type),
     ).toEqual(['session.resolveModelCatalog'])
+  })
+
+  test('无状态目录请求响应后立即回收 Worker', async () => {
+    const harness = new SupervisorHarness()
+    const request = harness.command('catalog-session', {
+      type: 'session.list',
+      cwd: '/tmp/project',
+      environment: {
+        variables: {},
+        configDir: '/tmp/catalog/config',
+      },
+    })
+    await harness.supervisor.dispatch(request)
+
+    const worker = harness.workerForSession('catalog-session')
+    worker.emitRuntimeEvent(
+      'catalog-session',
+      {
+        type: 'response.success',
+        responseTo: request.requestId,
+        result: { cwd: '/tmp/project', sessions: [] },
+      },
+      request.requestId,
+    )
+
+    expect(worker.killSignals).toContain('SIGTERM')
+  })
+
+  test('删除 Transcript 响应后立即回收无状态 Worker', async () => {
+    const harness = new SupervisorHarness()
+    const request = harness.command('delete-session', {
+      type: 'session.delete',
+      cwd: '/tmp/project',
+      environment: {
+        variables: {},
+        configDir: '/tmp/catalog/config',
+      },
+      runtimeSessionId: '00000000-0000-4000-8000-000000000001',
+    })
+    await harness.supervisor.dispatch(request)
+
+    const worker = harness.workerForSession('delete-session')
+    worker.emitRuntimeEvent(
+      'delete-session',
+      {
+        type: 'response.success',
+        responseTo: request.requestId,
+        result: { deleted: true },
+      },
+      request.requestId,
+    )
+
+    expect(worker.killSignals).toContain('SIGTERM')
   })
 
   test('Skill Catalog 解析命令可在 Session 初始化前立即发送', async () => {

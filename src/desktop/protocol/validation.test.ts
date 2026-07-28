@@ -150,6 +150,7 @@ describe('Desktop Runtime protocol validation', () => {
         commandEnvelope(
           {
             type: 'session.resolveModelCatalog',
+            cwd: '/tmp/project',
             environment: {
               variables: { OPENAI_API_KEY: 'test-key' },
               configDir: '/tmp/ccb-config',
@@ -195,10 +196,30 @@ describe('Desktop Runtime protocol validation', () => {
     ).not.toThrow()
   })
 
+  test('接受按项目 cwd 删除 CCB Transcript 的命令', () => {
+    expect(() =>
+      assertCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.delete',
+            cwd: '/tmp/project',
+            environment: {
+              variables: {},
+              configDir: '/tmp/ccb-config',
+            },
+            runtimeSessionId: '00000000-0000-4000-8000-000000000001',
+          },
+          'delete-session',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
   test('拒绝模型目录中的非法思考等级', () => {
     const envelope = commandEnvelope(
       {
         type: 'session.resolveModelCatalog',
+        cwd: '/tmp/project',
         environment: {
           variables: {},
           configDir: '/tmp/ccb-config',

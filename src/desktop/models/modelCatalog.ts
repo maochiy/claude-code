@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+import { setOriginalCwd } from '../../bootstrap/state.js'
 import { modelSupportsAutoMode } from '../../utils/betas.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import {
@@ -27,9 +29,13 @@ import type {
 } from '../protocol/types.js'
 
 export function resolveDesktopModelCatalog(
+  cwd: string,
   environment: RuntimeEnvironment,
   providerConfiguration: RuntimeProviderConfiguration,
 ): RuntimeModelCatalog {
+  const resolvedCwd = resolve(cwd)
+  setOriginalCwd(resolvedCwd)
+  process.chdir(resolvedCwd)
   applyDesktopRuntimeConfiguration(environment, providerConfiguration)
 
   const kernelOptions = getModelOptions()

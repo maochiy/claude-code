@@ -10,6 +10,11 @@ import {
   resolveRewindUserMessageUuid,
 } from './bootstrap/session-transcript.js'
 import { resolveDesktopModelCatalog } from './models/modelCatalog.js'
+import {
+  deleteDesktopSession,
+  resolveDesktopSessionCatalog,
+  resolveDesktopSessionTranscript,
+} from './sessions/sessionCatalog.js'
 import { resolveDesktopSkillCatalog } from './skills/skillCatalog.js'
 import type { ClaudeCodeDesktopHostBridge } from './bridge/DesktopHostBridge.js'
 import {
@@ -39,8 +44,34 @@ let sequence = 0
 let running = false
 let stopRequested = false
 let softInterruptRequested = false
+let executionGraphTimer: ReturnType<typeof setTimeout> | undefined
+let lastExecutionGraphFingerprint = ''
 const turnQueue: Array<{ prompt: string; uuid?: string }> = []
 const pendingInteractions = new Map<string, PendingInteraction>()
+
+async function publishExecutionGraph(force: boolean = false): Promise<void> {
+  if (!session) return
+  const graph = await session.getExecutionGraph()
+  const fingerprint = JSON.stringify({
+    nodes: graph.nodes,
+    todos: graph.todos,
+  })
+  if (!force && fingerprint === lastExecutionGraphFingerprint) return
+  lastExecutionGraphFingerprint = fingerprint
+  send({ type: 'runtime.executionGraphChanged', graph })
+}
+
+function scheduleExecutionGraphPublish(): void {
+  if (executionGraphTimer) return
+  executionGraphTimer = setTimeout(() => {
+    executionGraphTimer = undefined
+    void publishExecutionGraph().catch(error => {
+      const message = error instanceof Error ? error.message : String(error)
+      send({ type: 'runtime.log', level: 'warn', message: `执行图同步失败: ${message}` })
+    })
+  }, 80)
+  executionGraphTimer.unref?.()
+}
 
 function cancelPendingInteractions(message: string): void {
   const error = new Error(message)
@@ -123,6 +154,7 @@ async function runTurnQueue(): Promise<void> {
         for await (const message of session.submit(next.prompt, next.uuid)) {
           last = message
           send({ type: 'runtime.message', message })
+          scheduleExecutionGraphPublish()
           if (stopRequested || softInterruptRequested) break
         }
       } catch (error) {
@@ -144,6 +176,7 @@ async function runTurnQueue(): Promise<void> {
         session.resetAfterInterrupt()
       }
     }
+    await publishExecutionGraph(true)
     send({ type: 'turn.completed', result: last })
   } finally {
     running = false
@@ -186,9 +219,52 @@ async function handleCommand(
           type: 'response.success',
           responseTo: envelope.requestId,
           result: resolveDesktopModelCatalog(
+            command.cwd,
             command.environment,
             command.providerConfiguration,
           ),
+        },
+        envelope.requestId,
+      )
+      return
+    case 'session.list':
+      if (session) {
+        throw new Error('已打开的 Session 不能读取 Session Catalog，请使用独立请求')
+      }
+      sessionId = envelope.sessionId
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: await resolveDesktopSessionCatalog(command),
+        },
+        envelope.requestId,
+      )
+      return
+    case 'session.getTranscript':
+      if (session) {
+        throw new Error('已打开的 Session 不能读取其他 Transcript，请使用独立请求')
+      }
+      sessionId = envelope.sessionId
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: await resolveDesktopSessionTranscript(command),
+        },
+        envelope.requestId,
+      )
+      return
+    case 'session.delete':
+      if (session) {
+        throw new Error('已打开的 Session 不能删除 Transcript，请先关闭 Session')
+      }
+      sessionId = envelope.sessionId
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: await deleteDesktopSession(command),
         },
         envelope.requestId,
       )
@@ -236,6 +312,7 @@ async function handleCommand(
         state: 'ready',
         runtimeSessionId: opened.runtimeSessionId,
       })
+      await publishExecutionGraph(true)
       return
     }
     case 'turn.start':
@@ -310,6 +387,28 @@ async function handleCommand(
       }
       send(
         { type: 'response.success', responseTo: envelope.requestId },
+        envelope.requestId,
+      )
+      return
+    case 'session.getExecutionGraph':
+      if (!session) throw new Error('Session 尚未打开')
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: await session.getExecutionGraph(),
+        },
+        envelope.requestId,
+      )
+      return
+    case 'session.getSubagentTranscript':
+      if (!session) throw new Error('Session 尚未打开')
+      send(
+        {
+          type: 'response.success',
+          responseTo: envelope.requestId,
+          result: session.getSubagentTranscript(command.executionNodeId),
+        },
         envelope.requestId,
       )
       return
@@ -425,6 +524,9 @@ async function handleCommand(
       return
     case 'session.close':
       cancelPendingInteractions('Runtime Session 已关闭')
+      if (executionGraphTimer) clearTimeout(executionGraphTimer)
+      executionGraphTimer = undefined
+      lastExecutionGraphFingerprint = ''
       await session?.dispose()
       session = undefined
       sessionOptions = undefined

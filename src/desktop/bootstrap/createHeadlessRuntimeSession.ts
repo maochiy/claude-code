@@ -49,10 +49,16 @@ import { getAgentDefinitionsWithOverrides } from '@claude-code-best/builtin-tool
 import type { ClaudeCodeDesktopHostBridge } from '../bridge/DesktopHostBridge.js'
 import type {
   DesktopPermissionMode,
+  RuntimeExecutionGraph,
   RuntimeInteractionResponse,
   RuntimeSessionOptions,
+  RuntimeSubagentTranscript,
 } from '../protocol/types.js'
 import { applyDesktopRuntimeConfiguration } from './runtimeConfiguration.js'
+import {
+  buildRuntimeExecutionGraph,
+  resolveRuntimeSubagentTranscript,
+} from '../sessions/executionGraph.js'
 
 export interface HeadlessRuntimeSession {
   readonly runtimeSessionId: string
@@ -67,6 +73,8 @@ export interface HeadlessRuntimeSession {
   setEffortLevel(level: EffortLevel | undefined): void
   getMessages(): ReturnType<QueryEngine['getMessages']>
   getFileHistoryState(): AppState['fileHistory']
+  getExecutionGraph(): Promise<RuntimeExecutionGraph>
+  getSubagentTranscript(executionNodeId: string): RuntimeSubagentTranscript
   dispose(): Promise<void>
 }
 
@@ -284,6 +292,10 @@ export async function createHeadlessRuntimeSession(
     },
     getMessages: () => engine.getMessages(),
     getFileHistoryState: () => store.getState().fileHistory,
+    getExecutionGraph: () =>
+      buildRuntimeExecutionGraph(runtimeSessionId, store.getState()),
+    getSubagentTranscript: executionNodeId =>
+      resolveRuntimeSubagentTranscript(store.getState(), executionNodeId),
     dispose: async () => {
       setChatGPTCredentialsUpdateHandler(undefined)
       for (const client of mcp.clients) {
