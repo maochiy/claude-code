@@ -31,6 +31,10 @@ import {
   assertCommandEnvelope,
   assertEventEnvelope,
 } from './protocol/validation.js'
+import {
+  isTerminalTurnMessage,
+  TurnIdleBarrier,
+} from './turnLifecycle.js'
 
 interface PendingInteraction {
   resolve: (response: RuntimeInteractionResponse) => void
@@ -48,6 +52,7 @@ let executionGraphTimer: ReturnType<typeof setTimeout> | undefined
 let lastExecutionGraphFingerprint = ''
 const turnQueue: Array<{ prompt: string; uuid?: string }> = []
 const pendingInteractions = new Map<string, PendingInteraction>()
+const turnIdleBarrier = new TurnIdleBarrier()
 
 async function publishExecutionGraph(force: boolean = false): Promise<void> {
   if (!session) return
@@ -155,7 +160,16 @@ async function runTurnQueue(): Promise<void> {
           last = message
           send({ type: 'runtime.message', message })
           scheduleExecutionGraphPublish()
-          if (stopRequested || softInterruptRequested) break
+          // QueryEngine 的 result 是当前 Turn 的明确终止边界。Desktop Runtime
+          // 不再等待底层 AsyncIterator 自然关闭，避免内容已经完成但 Worker
+          // 仍长期保持 running=true。
+          if (
+            isTerminalTurnMessage(message)
+            || stopRequested
+            || softInterruptRequested
+          ) {
+            break
+          }
         }
       } catch (error) {
         if (!stopRequested && !softInterruptRequested) {
@@ -187,6 +201,7 @@ async function runTurnQueue(): Promise<void> {
       state: 'ready',
       runtimeSessionId: session.runtimeSessionId,
     })
+    turnIdleBarrier.resolve()
     if (turnQueue.length > 0) void runTurnQueue()
   }
 }
@@ -348,6 +363,10 @@ async function handleCommand(
       stopRequested = true
       turnQueue.length = 0
       session?.interrupt()
+      // Stop 的成功响应表示 QueryEngine 已真正退出、Worker 已回到 ready，
+      // 而不是仅表示“已收到停止命令”。Proma 只有在该 Promise 完成后才能
+      // 清除 UI 的运行状态。
+      await turnIdleBarrier.wait(running)
       send(
         { type: 'response.success', responseTo: envelope.requestId },
         envelope.requestId,
