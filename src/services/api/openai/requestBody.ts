@@ -7,21 +7,20 @@ import type { ChatCompletionCreateParamsStreaming } from 'openai/resources/chat/
 import { isEnvTruthy, isEnvDefinedFalsy } from '../../../utils/envUtils.js'
 import type { EffortValue } from '../../../utils/effort.js'
 
-export type OpenAIChatReasoningEffort = 'low' | 'medium' | 'high'
+export type OpenAIChatReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
 /**
- * Chat Completions 兼容端点通常只接受 low/medium/high。
- * CCB 的 xhigh/max 与数值档位在该协议下安全降级为 high。
+ * OpenAI Chat Completions 已支持 xhigh；CCB 的 max 在该协议下作为
+ * xhigh 的桌面端别名，数值档位继续归一化为 high。
  */
 export function normalizeOpenAIChatReasoningEffort(
   effortValue: EffortValue | undefined,
 ): OpenAIChatReasoningEffort | undefined {
   if (effortValue === 'low') return 'low'
   if (effortValue === 'medium') return 'medium'
+  if (effortValue === 'xhigh' || effortValue === 'max') return 'xhigh'
   if (
     effortValue === 'high'
-    || effortValue === 'xhigh'
-    || effortValue === 'max'
     || typeof effortValue === 'number'
   ) {
     return 'high'
