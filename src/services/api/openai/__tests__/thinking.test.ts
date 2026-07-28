@@ -317,9 +317,12 @@ describe('normalizeOpenAIChatReasoningEffort', () => {
     expect(normalizeOpenAIChatReasoningEffort('high')).toBe('high')
   })
 
-  test('downgrades xhigh, max and numeric effort to high', () => {
-    expect(normalizeOpenAIChatReasoningEffort('xhigh')).toBe('high')
-    expect(normalizeOpenAIChatReasoningEffort('max')).toBe('high')
+  test('keeps xhigh and maps max to xhigh', () => {
+    expect(normalizeOpenAIChatReasoningEffort('xhigh')).toBe('xhigh')
+    expect(normalizeOpenAIChatReasoningEffort('max')).toBe('xhigh')
+  })
+
+  test('maps numeric effort to high', () => {
     expect(normalizeOpenAIChatReasoningEffort(128)).toBe('high')
   })
 
