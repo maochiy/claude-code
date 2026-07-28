@@ -12,7 +12,9 @@ import {
 } from '../../utils/effort.js'
 import { isFastModeSupportedByModel } from '../../utils/fastMode.js'
 import {
+  getConfiguredDefaultModelId,
   getConfiguredModel,
+  getConfiguredModels,
   normalizeConfiguredModelId,
 } from '../../utils/model/configuredModels.js'
 import {
@@ -39,13 +41,20 @@ export function resolveDesktopModelCatalog(
   applyDesktopRuntimeConfiguration(environment, providerConfiguration)
 
   const kernelOptions = getModelOptions()
-  const models = providerConfiguration.models.map(configured => {
+  const configuredModels = getConfiguredModels()
+  const catalogModels =
+    configuredModels.length > 0 ? configuredModels : providerConfiguration.models
+  const models = catalogModels.map(configured => {
     const value = normalizeConfiguredModelId(configured.id).id
     const option = kernelOptions.find(
       candidate =>
         candidate.value === value ||
         (candidate.value === null &&
-          normalizeConfiguredModelId(providerConfiguration.defaultModel ?? '')
+          normalizeConfiguredModelId(
+            getConfiguredDefaultModelId() ??
+              providerConfiguration.defaultModel ??
+              '',
+          )
             .id === value),
     )
     const resolvedModel =
@@ -94,14 +103,16 @@ export function resolveDesktopModelCatalog(
     }
   })
 
-  const configuredDefaultModel = providerConfiguration.defaultModel
-    ? normalizeConfiguredModelId(providerConfiguration.defaultModel).id
+  const configuredDefaultModel =
+    getConfiguredDefaultModelId() ?? providerConfiguration.defaultModel
+  const normalizedDefaultModel = configuredDefaultModel
+    ? normalizeConfiguredModelId(configuredDefaultModel).id
     : undefined
   return {
     defaultModel:
-      configuredDefaultModel &&
-      models.some(model => model.value === configuredDefaultModel)
-        ? configuredDefaultModel
+      normalizedDefaultModel &&
+      models.some(model => model.value === normalizedDefaultModel)
+        ? normalizedDefaultModel
         : models[0]?.value,
     models,
   }

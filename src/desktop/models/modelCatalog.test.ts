@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { resolveDesktopModelCatalog } from './modelCatalog.js'
 
 const ORIGINAL_ENV = { ...process.env }
+const tempDirectories: string[] = []
 
 afterEach(() => {
   for (const key of Object.keys(process.env)) {
     if (!(key in ORIGINAL_ENV)) delete process.env[key]
   }
   Object.assign(process.env, ORIGINAL_ENV)
+  for (const directory of tempDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 describe('Desktop Runtime 模型目录', () => {
@@ -69,5 +76,50 @@ describe('Desktop Runtime 模型目录', () => {
     expect(catalog.defaultModel).toBe('claude-sonnet-4-6')
     expect(catalog.models[0]?.value).toBe('claude-sonnet-4-6')
     expect(catalog.models[0]?.contextWindow).toBe(1_000_000)
+  })
+
+  test('存在 CCB 用户模型配置时优先返回原生目录，而不是 Proma fallback', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'ccb-desktop-models-'))
+    tempDirectories.push(configDir)
+    writeFileSync(
+      join(configDir, 'settings.json'),
+      JSON.stringify({
+        modelType: 'openai',
+        model: 'ccb-primary',
+        models: [
+          {
+            id: 'ccb-primary',
+            name: 'CCB Primary',
+            contextWindow: 1_000_000,
+          },
+          {
+            id: 'ccb-fast',
+            name: 'CCB Fast',
+            contextWindow: 200_000,
+          },
+        ],
+      }),
+    )
+
+    const catalog = resolveDesktopModelCatalog(
+      process.cwd(),
+      {
+        variables: {
+          OPENAI_API_KEY: 'test-key',
+        },
+        configDir,
+      },
+      {
+        modelType: 'openai',
+        defaultModel: 'proma-fallback',
+        models: [{ id: 'proma-fallback', name: 'Proma Fallback' }],
+      },
+    )
+
+    expect(catalog.defaultModel).toBe('ccb-primary')
+    expect(catalog.models.map(model => model.value)).toEqual([
+      'ccb-primary',
+      'ccb-fast',
+    ])
   })
 })

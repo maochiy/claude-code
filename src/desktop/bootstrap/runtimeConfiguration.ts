@@ -2,6 +2,7 @@ import { setFlagSettingsInline } from '../../bootstrap/state.js'
 import { clearOpenAIClientCache } from '../../services/api/openai/client.js'
 import { enableConfigs } from '../../utils/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../utils/managedEnv.js'
+import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type {
   RuntimeEnvironment,
@@ -23,17 +24,20 @@ export function applyDesktopRuntimeConfiguration(
   process.env.CLAUDE_CONFIG_DIR = environment.configDir
   process.env.CLAUDE_CODE_ENTRYPOINT = 'desktop-runtime'
   enableConfigs()
-  setFlagSettingsInline(
-    providerConfiguration
-      ? {
-          modelType: providerConfiguration.modelType,
-          ...(providerConfiguration.defaultModel
-            ? { model: providerConfiguration.defaultModel }
-            : {}),
-          models: providerConfiguration.models,
-        }
-      : null,
-  )
+  setFlagSettingsInline(null)
+  resetSettingsCache()
+  const nativeSettings = getSettings_DEPRECATED()
+  const hasNativeModelCatalog =
+    nativeSettings.models !== undefined && nativeSettings.models.length > 0
+  if (providerConfiguration && !hasNativeModelCatalog) {
+    setFlagSettingsInline({
+      modelType: providerConfiguration.modelType,
+      ...(providerConfiguration.defaultModel
+        ? { model: providerConfiguration.defaultModel }
+        : {}),
+      models: providerConfiguration.models,
+    })
+  }
   clearOpenAIClientCache()
   resetSettingsCache()
   applySafeConfigEnvironmentVariables()
