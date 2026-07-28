@@ -47,7 +47,10 @@ export function anthropicToolsToOpenAI(
  *
  * Many OpenAI-compatible endpoints (Ollama, DeepSeek, vLLM, etc.) do not
  * support the `const` keyword in JSON Schema. Convert it to `enum` with a
- * single-element array, which is semantically equivalent.
+ * single-element array, which is semantically equivalent. These endpoints
+ * also commonly reject regex lookaround constructs in `pattern`; remove only
+ * those transport-level constraints while retaining runtime validation in the
+ * tool implementation.
  */
 function sanitizeJsonSchema(
   schema: Record<string, unknown>,
@@ -60,6 +63,13 @@ function sanitizeJsonSchema(
   if ('const' in result) {
     result.enum = [result.const]
     delete result.const
+  }
+
+  if (
+    typeof result.pattern === 'string' &&
+    containsRegexLookaround(result.pattern)
+  ) {
+    delete result.pattern
   }
 
   // Recursively process nested schemas
@@ -115,6 +125,15 @@ function sanitizeJsonSchema(
   }
 
   return result
+}
+
+function containsRegexLookaround(pattern: string): boolean {
+  return (
+    pattern.includes('(?=') ||
+    pattern.includes('(?!') ||
+    pattern.includes('(?<=') ||
+    pattern.includes('(?<!')
+  )
 }
 
 /**

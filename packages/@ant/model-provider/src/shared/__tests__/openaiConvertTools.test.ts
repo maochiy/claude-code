@@ -151,6 +151,89 @@ describe('anthropicToolsToOpenAI', () => {
     expect(anyOf[1]).toEqual({ enum: ['b'] })
     expect(anyOf[2]).toEqual({ type: 'string' })
   })
+
+  test('removes unsupported regex lookaround without mutating the source schema', () => {
+    const inputSchema = {
+      type: 'object',
+      properties: {
+        store: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 255,
+          pattern: '^(?!\\.)[^/\\\\:\\x00]{1,255}$',
+        },
+        plain: {
+          type: 'string',
+          pattern: '^[a-z0-9_-]+$',
+        },
+      },
+    }
+    const tools = [
+      {
+        type: 'custom',
+        name: 'memory',
+        description: 'memory tool',
+        input_schema: inputSchema,
+      },
+    ]
+
+    const result = anthropicToolsToOpenAI(tools as any)
+    const properties = (
+      (result[0] as { function: { parameters: any } }).function
+        .parameters as any
+    ).properties
+
+    expect(properties.store).toEqual({
+      type: 'string',
+      minLength: 1,
+      maxLength: 255,
+    })
+    expect(properties.plain.pattern).toBe('^[a-z0-9_-]+$')
+    expect(inputSchema.properties.store.pattern).toBe(
+      '^(?!\\.)[^/\\\\:\\x00]{1,255}$',
+    )
+  })
+
+  test('removes lookaround patterns from nested schema variants', () => {
+    const tools = [
+      {
+        type: 'custom',
+        name: 'nested',
+        description: 'nested patterns',
+        input_schema: {
+          type: 'object',
+          properties: {
+            values: {
+              type: 'array',
+              items: {
+                anyOf: [
+                  { type: 'string', pattern: '(?<=prefix)value' },
+                  { type: 'string', pattern: 'value(?=suffix)' },
+                  { type: 'string', pattern: 'value(?!suffix)' },
+                  { type: 'string', pattern: '(?<!prefix)value' },
+                  { type: 'string', pattern: '^safe$' },
+                ],
+              },
+            },
+          },
+        },
+      },
+    ]
+
+    const result = anthropicToolsToOpenAI(tools as any)
+    const anyOf = (
+      (result[0] as { function: { parameters: any } }).function
+        .parameters as any
+    ).properties.values.items.anyOf
+
+    expect(anyOf.slice(0, 4)).toEqual([
+      { type: 'string' },
+      { type: 'string' },
+      { type: 'string' },
+      { type: 'string' },
+    ])
+    expect(anyOf[4]).toEqual({ type: 'string', pattern: '^safe$' })
+  })
 })
 
 describe('anthropicToolChoiceToOpenAI', () => {
