@@ -43,7 +43,7 @@ import { effortLevelToSymbol } from './EffortIndicator.js';
 export type Props = {
   initial: string | null;
   sessionModel?: ModelSetting;
-  onSelect: (model: string | null, effort: EffortLevel | undefined) => void;
+  onSelect: (model: string | null, effort: EffortLevel | undefined) => unknown;
   onCancel?: () => void;
   isStandaloneCommand?: boolean;
   showFastModeNotice?: boolean;
@@ -212,9 +212,6 @@ export function ModelPicker({
   );
 
   function handleSelect(value: string): void {
-    logEvent('tengu_model_command_menu_effort', {
-      effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    });
     const selectedModel = resolveOptionModel(value);
     const selectedConfiguredModel = selectedModel ? getConfiguredModel(selectedModel) : undefined;
     const selectedSupportsEffort =
@@ -223,6 +220,19 @@ export function ModelPicker({
       (effort === undefined ||
         selectedConfiguredModel?.effortLevels === undefined ||
         selectedConfiguredModel.effortLevels.includes(effort));
+    const selectedEffort = hasToggledEffort && selectedSupportsEffort ? effort : undefined;
+    const baseValue = value.replace(/\[1m\]/i, '');
+    const wants1M = !selectedConfiguredModel && marked1MValues.has(baseValue);
+    const finalValue =
+      value === NO_PREFERENCE ? null : (selectedConfiguredModel?.id ?? (wants1M ? `${baseValue}[1m]` : baseValue));
+
+    if (onSelect(finalValue, selectedEffort) === false) {
+      return;
+    }
+
+    logEvent('tengu_model_command_menu_effort', {
+      effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    });
     if (!skipSettingsWrite) {
       // Prior comes from userSettings on disk — NOT merged settings (which
       // includes project/policy layers that must not leak into the user's
@@ -245,20 +255,6 @@ export function ModelPicker({
       }
       setAppState(prev => ({ ...prev, effortValue: effortLevel }));
     }
-
-    const selectedEffort = hasToggledEffort && selectedSupportsEffort ? effort : undefined;
-    if (value === NO_PREFERENCE) {
-      onSelect(null, selectedEffort);
-      return;
-    }
-    // Apply or strip [1m] suffix based on user toggle. marked1MValues is keyed
-    // on the base value (see initializer + handleToggle1M), so look up with the
-    // base form — not `value`, which may carry a `[1m]` suffix from predefined
-    // 1M options and would never match.
-    const baseValue = value.replace(/\[1m\]/i, '');
-    const wants1M = !selectedConfiguredModel && marked1MValues.has(baseValue);
-    const finalValue = selectedConfiguredModel?.id ?? (wants1M ? `${baseValue}[1m]` : baseValue);
-    onSelect(finalValue, selectedEffort);
   }
 
   const content = (
