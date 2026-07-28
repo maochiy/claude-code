@@ -1,7 +1,9 @@
 import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { TaskState } from '../../tasks/types.js'
+import { asAgentId } from '../../types/ids.js'
 import { toSDKMessages } from '../../utils/messages/mappers.js'
+import { getAgentTranscript } from '../../utils/sessionStorage.js'
 import { getTaskListId, listTasks } from '../../utils/tasks.js'
 import type {
   RuntimeExecutionGraph,
@@ -45,9 +47,34 @@ function optionalString(
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function taskMessages(task: TaskState): SDKMessage[] {
+function taskMessagesInMemory(task: TaskState): SDKMessage[] {
   if (!('messages' in task) || !Array.isArray(task.messages)) return []
   return toSDKMessages(task.messages)
+}
+
+function taskTranscriptAgentId(task: TaskState): string | undefined {
+  if (task.type === 'local_agent') return task.agentId
+  if (task.type === 'in_process_teammate') return task.identity.agentId
+  return undefined
+}
+
+async function taskMessages(task: TaskState): Promise<SDKMessage[]> {
+  const inMemory = taskMessagesInMemory(task)
+  if (inMemory.length > 0) return inMemory
+
+  const agentId = taskTranscriptAgentId(task)
+  if (!agentId) return []
+  const transcript = await getAgentTranscript(asAgentId(agentId)).catch(
+    () => null,
+  )
+  return transcript ? toSDKMessages(transcript.messages) : []
+}
+
+function taskTranscriptAvailable(task: TaskState): boolean {
+  return (
+    taskMessagesInMemory(task).length > 0
+    || taskTranscriptAgentId(task) !== undefined
+  )
 }
 
 function toExecutionNode(task: TaskState): RuntimeExecutionNode {
@@ -76,7 +103,7 @@ function toExecutionNode(task: TaskState): RuntimeExecutionNode {
     startedAt: task.startTime,
     completedAt: task.endTime,
     toolUseId: task.toolUseId,
-    transcriptAvailable: taskMessages(task).length > 0,
+    transcriptAvailable: taskTranscriptAvailable(task),
     name:
       optionalString(identity?.agentName)
       ?? optionalString(selectedAgent?.name)
@@ -127,16 +154,28 @@ export async function buildRuntimeExecutionGraph(
   }
 }
 
-export function resolveRuntimeSubagentTranscript(
+export async function resolveRuntimeSubagentTranscript(
   appState: AppState,
   executionNodeId: string,
-): RuntimeSubagentTranscript {
+): Promise<RuntimeSubagentTranscript> {
   const task = appState.tasks[executionNodeId]
-  if (!task) {
-    throw new Error(`执行节点不存在: ${executionNodeId}`)
+  if (task) {
+    return {
+      executionNodeId,
+      messages: await taskMessages(task),
+    }
+  }
+
+  // LocalAgent 的 task id 与 agentId 一致。即使 CCB 已从 AppState 回收
+  // 完成节点，Desktop 仍可直接读取磁盘上的 sidechain Transcript。
+  const transcript = await getAgentTranscript(
+    asAgentId(executionNodeId),
+  ).catch(() => null)
+  if (!transcript) {
+    throw new Error(`执行节点不存在或 Transcript 尚未写入: ${executionNodeId}`)
   }
   return {
     executionNodeId,
-    messages: taskMessages(task),
+    messages: toSDKMessages(transcript.messages),
   }
 }

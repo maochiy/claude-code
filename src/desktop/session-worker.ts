@@ -407,7 +407,7 @@ async function handleCommand(
         {
           type: 'response.success',
           responseTo: envelope.requestId,
-          result: session.getSubagentTranscript(command.executionNodeId),
+          result: await session.getSubagentTranscript(command.executionNodeId),
         },
         envelope.requestId,
       )

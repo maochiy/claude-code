@@ -39,6 +39,7 @@ function appStateWithTasks(): AppState {
         endTime: 30,
         toolUseId: 'tool-teammate-1',
         identity: {
+          agentId: 'reviewer@desktop-team',
           agentName: 'Reviewer',
           teamName: 'desktop-team',
         },
@@ -81,6 +82,7 @@ describe('Desktop Runtime CCB 执行图', () => {
         status: 'completed',
         name: 'Reviewer',
         teamName: 'desktop-team',
+        transcriptAvailable: true,
       }),
     )
     expect(graph.todos).toContainEqual(
@@ -91,8 +93,8 @@ describe('Desktop Runtime CCB 执行图', () => {
     )
   })
 
-  test('Given CCB 子代理消息 When 读取 Transcript Then 使用 SDKMessage wire shape', () => {
-    const transcript = resolveRuntimeSubagentTranscript(
+  test('Given CCB 子代理消息 When 读取 Transcript Then 使用 SDKMessage wire shape', async () => {
+    const transcript = await resolveRuntimeSubagentTranscript(
       appStateWithTasks(),
       'agent-1',
     )

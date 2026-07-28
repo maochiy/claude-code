@@ -74,7 +74,7 @@ export interface HeadlessRuntimeSession {
   getMessages(): ReturnType<QueryEngine['getMessages']>
   getFileHistoryState(): AppState['fileHistory']
   getExecutionGraph(): Promise<RuntimeExecutionGraph>
-  getSubagentTranscript(executionNodeId: string): RuntimeSubagentTranscript
+  getSubagentTranscript(executionNodeId: string): Promise<RuntimeSubagentTranscript>
   dispose(): Promise<void>
 }
 
