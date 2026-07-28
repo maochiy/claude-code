@@ -42,7 +42,13 @@ import {
   isOpenAIThinkingEnabled,
   resolveOpenAIMaxTokens,
   buildOpenAIRequestBody,
+  normalizeOpenAIChatReasoningEffort,
+  type OpenAIChatReasoningEffort,
 } from './requestBody.js'
+import {
+  modelSupportsEffort,
+  resolveAppliedEffort,
+} from '../../../utils/effort.js'
 import { recordLLMObservation } from '../../../services/langfuse/tracing.js'
 import {
   convertMessagesToLangfuse,
@@ -93,6 +99,16 @@ function getChatGPTResponsesReasoningEffort(
     convertToResponsesReasoningEffort(envOverride) ??
     convertToResponsesReasoningEffort(effortValue) ??
     'medium'
+  )
+}
+
+function getOpenAIChatReasoningEffort(
+  model: string,
+  effortValue: Options['effortValue'],
+): OpenAIChatReasoningEffort | undefined {
+  if (!modelSupportsEffort(model)) return undefined
+  return normalizeOpenAIChatReasoningEffort(
+    resolveAppliedEffort(model, effortValue),
   )
 }
 
@@ -307,6 +323,10 @@ export async function* queryModelOpenAI(
     const reasoningEffort = getChatGPTResponsesReasoningEffort(
       options.effortValue,
     )
+    const chatReasoningEffort = getOpenAIChatReasoningEffort(
+      openaiModel,
+      options.effortValue,
+    )
 
     // 9. Log tool filtering details
     if (useSearchExtraTools) {
@@ -379,6 +399,7 @@ export async function* queryModelOpenAI(
               tools: openaiTools,
               toolChoice: openaiToolChoice,
               enableThinking,
+              reasoningEffort: chatReasoningEffort,
               maxTokens,
               temperatureOverride: options.temperatureOverride,
             }),

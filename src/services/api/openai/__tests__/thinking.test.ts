@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test'
 import {
   isOpenAIThinkingEnabled,
   buildOpenAIRequestBody,
+  normalizeOpenAIChatReasoningEffort,
 } from '../requestBody.js'
 
 // Re-register envUtils.js with correct isEnvDefinedFalsy and isEnvTruthy to
@@ -236,6 +237,23 @@ describe('buildOpenAIRequestBody — thinking params', () => {
     expect(body.chat_template_kwargs).toBeUndefined()
   })
 
+  test('includes reasoning_effort for OpenAI-compatible reasoning models', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      enableThinking: false,
+      reasoningEffort: 'high',
+    })
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  test('does NOT include reasoning_effort when the model has no effort selection', () => {
+    const body = buildOpenAIRequestBody({
+      ...baseParams,
+      enableThinking: false,
+    })
+    expect(body.reasoning_effort).toBeUndefined()
+  })
+
   test('always includes stream and stream_options', () => {
     const body = buildOpenAIRequestBody({
       ...baseParams,
@@ -289,5 +307,23 @@ describe('buildOpenAIRequestBody — thinking params', () => {
     })
     expect(body.tools).toBeUndefined()
     expect(body.tool_choice).toBeUndefined()
+  })
+})
+
+describe('normalizeOpenAIChatReasoningEffort', () => {
+  test('keeps low, medium and high unchanged', () => {
+    expect(normalizeOpenAIChatReasoningEffort('low')).toBe('low')
+    expect(normalizeOpenAIChatReasoningEffort('medium')).toBe('medium')
+    expect(normalizeOpenAIChatReasoningEffort('high')).toBe('high')
+  })
+
+  test('downgrades xhigh, max and numeric effort to high', () => {
+    expect(normalizeOpenAIChatReasoningEffort('xhigh')).toBe('high')
+    expect(normalizeOpenAIChatReasoningEffort('max')).toBe('high')
+    expect(normalizeOpenAIChatReasoningEffort(128)).toBe('high')
+  })
+
+  test('omits the parameter when no effort is selected', () => {
+    expect(normalizeOpenAIChatReasoningEffort(undefined)).toBeUndefined()
   })
 })
