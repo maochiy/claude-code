@@ -78,7 +78,7 @@ describe('Desktop Runtime 模型目录', () => {
     expect(catalog.models[0]?.contextWindow).toBe(1_000_000)
   })
 
-  test('存在 CCB 用户模型配置时优先返回原生目录，而不是 Proma fallback', () => {
+  test('Desktop 显式传入模型目录时覆盖 CCB 用户原生目录', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'ccb-desktop-models-'))
     tempDirectories.push(configDir)
     writeFileSync(
@@ -113,6 +113,45 @@ describe('Desktop Runtime 模型目录', () => {
         modelType: 'openai',
         defaultModel: 'proma-fallback',
         models: [{ id: 'proma-fallback', name: 'Proma Fallback' }],
+      },
+    )
+
+    expect(catalog.defaultModel).toBe('proma-fallback')
+    expect(catalog.models.map(model => model.value)).toEqual(['proma-fallback'])
+  })
+
+  test('Desktop 未传入模型目录时保留 CCB 用户原生目录', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'ccb-native-models-'))
+    tempDirectories.push(configDir)
+    writeFileSync(
+      join(configDir, 'settings.json'),
+      JSON.stringify({
+        modelType: 'openai',
+        model: 'ccb-primary',
+        models: [
+          {
+            id: 'ccb-primary',
+            name: 'CCB Primary',
+            contextWindow: 1_000_000,
+          },
+          {
+            id: 'ccb-fast',
+            name: 'CCB Fast',
+            contextWindow: 200_000,
+          },
+        ],
+      }),
+    )
+
+    const catalog = resolveDesktopModelCatalog(
+      process.cwd(),
+      {
+        variables: {},
+        configDir,
+      },
+      {
+        modelType: 'anthropic',
+        models: [],
       },
     )
 

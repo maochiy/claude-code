@@ -2,6 +2,7 @@ import { setFlagSettingsInline } from '../../bootstrap/state.js'
 import { clearOpenAIClientCache } from '../../services/api/openai/client.js'
 import { enableConfigs } from '../../utils/config.js'
 import { applySafeConfigEnvironmentVariables } from '../../utils/managedEnv.js'
+import { setConfiguredModelCatalogOverride } from '../../utils/model/configuredModels.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import type {
@@ -29,7 +30,16 @@ export function applyDesktopRuntimeConfiguration(
   const nativeSettings = getSettings_DEPRECATED()
   const hasNativeModelCatalog =
     nativeSettings.models !== undefined && nativeSettings.models.length > 0
-  if (providerConfiguration && !hasNativeModelCatalog) {
+  const hasDesktopProviderCatalog =
+    providerConfiguration !== undefined && providerConfiguration.models.length > 0
+  setConfiguredModelCatalogOverride(
+    providerConfiguration?.modelType ?? 'anthropic',
+    hasDesktopProviderCatalog ? providerConfiguration.models : undefined,
+  )
+  if (
+    providerConfiguration
+    && (hasDesktopProviderCatalog || !hasNativeModelCatalog)
+  ) {
     setFlagSettingsInline({
       modelType: providerConfiguration.modelType,
       ...(providerConfiguration.defaultModel
