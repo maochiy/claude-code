@@ -362,14 +362,22 @@ async function handleCommand(
       return
     case 'session.updateConfig':
       if (command.model) session?.setModel(command.model)
-      session?.setThinkingConfig(command.thinkingConfig)
-      session?.setEffortLevel(command.effortLevel)
+      if ('thinkingConfig' in command) {
+        session?.setThinkingConfig(command.thinkingConfig)
+      }
+      if ('effortLevel' in command) {
+        session?.setEffortLevel(command.effortLevel)
+      }
       if (sessionOptions) {
         sessionOptions = {
           ...sessionOptions,
           model: command.model ?? sessionOptions.model,
-          thinkingConfig: command.thinkingConfig,
-          effortLevel: command.effortLevel,
+          ...('thinkingConfig' in command
+            ? { thinkingConfig: command.thinkingConfig }
+            : {}),
+          ...('effortLevel' in command
+            ? { effortLevel: command.effortLevel }
+            : {}),
         }
       }
       send(
