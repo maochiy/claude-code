@@ -64,6 +64,7 @@ export interface HeadlessRuntimeSession {
   readonly runtimeSessionId: string
   submit(prompt: string, uuid?: string): AsyncIterable<SDKMessage>
   interrupt(): void
+  getAbortSignal(): AbortSignal
   resetAfterInterrupt(): void
   setPermissionMode(mode: DesktopPermissionMode): void
   setModel(model: string): void
@@ -268,6 +269,7 @@ export async function createHeadlessRuntimeSession(
     submit: (prompt, uuid) =>
       engine.submitMessage(prompt, { uuid: uuid as UUID | undefined }),
     interrupt: () => engine.interrupt(),
+    getAbortSignal: () => engine.getAbortSignal(),
     resetAfterInterrupt: () => engine.resetAbortController(),
     setPermissionMode: mode => {
       store.setState(prev => ({

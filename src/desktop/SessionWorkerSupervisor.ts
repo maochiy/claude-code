@@ -428,7 +428,7 @@ export class SessionWorkerSupervisor {
     slot.stopping = true
     const sessionId = slot.sessionId
     if (sessionId) this.workers.delete(sessionId)
-    slot.process.kill('SIGTERM')
+    this.terminateWorker(slot)
     this.drainPending()
   }
 
@@ -452,6 +452,23 @@ export class SessionWorkerSupervisor {
             ? slot.lastOpenEnvelope.payload.options.runtimeSessionId
             : undefined,
       },
+    })
+    this.terminateWorker(slot)
+  }
+
+  /**
+   * 普通回收也必须具备 shutdown 同等级别的强制退出兜底。
+   *
+   * Stateless Worker 没有 Headless Session，历史实现收到 SIGTERM 后可能没有
+   * 真正 process.exit，导致每次 Catalog/Transcript 查询都残留一个进程。
+   */
+  private terminateWorker(slot: WorkerSlot): void {
+    const timer = this.dependencies.setTimeout(() => {
+      slot.process.kill('SIGKILL')
+    }, this.dependencies.shutdownGraceMs)
+    timer.unref?.()
+    slot.process.once('exit', () => {
+      this.dependencies.clearTimeout(timer)
     })
     slot.process.kill('SIGTERM')
   }

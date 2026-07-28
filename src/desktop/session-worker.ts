@@ -33,6 +33,7 @@ import {
 } from './protocol/validation.js'
 import {
   isTerminalTurnMessage,
+  nextTurnMessageOrAbort,
   TurnIdleBarrier,
 } from './turnLifecycle.js'
 
@@ -156,7 +157,14 @@ async function runTurnQueue(): Promise<void> {
       if (!next) break
       softInterruptRequested = false
       try {
-        for await (const message of session.submit(next.prompt, next.uuid)) {
+        const messages = session.submit(next.prompt, next.uuid)[
+          Symbol.asyncIterator
+        ]()
+        const abortSignal = session.getAbortSignal()
+        while (!abortSignal.aborted) {
+          const result = await nextTurnMessageOrAbort(messages, abortSignal)
+          if (result.done || abortSignal.aborted) break
+          const message = result.value
           last = message
           send({ type: 'runtime.message', message })
           scheduleExecutionGraphPublish()
@@ -604,14 +612,21 @@ process.on('message', (value: unknown) => {
   })()
 })
 
+async function shutdownWorker(reason: string): Promise<void> {
+  cancelPendingInteractions(reason)
+  try {
+    await session?.dispose()
+  } finally {
+    process.exit(0)
+  }
+}
+
 process.once('disconnect', () => {
-  cancelPendingInteractions('Desktop Host 已断开')
-  void session?.dispose().finally(() => process.exit(0))
+  void shutdownWorker('Desktop Host 已断开')
 })
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    cancelPendingInteractions(`Worker 收到 ${signal}`)
-    void session?.dispose().finally(() => process.exit(0))
+    void shutdownWorker(`Worker 收到 ${signal}`)
   })
 }

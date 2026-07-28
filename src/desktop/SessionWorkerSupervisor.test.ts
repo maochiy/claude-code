@@ -263,6 +263,51 @@ describe('SessionWorkerSupervisor', () => {
     )
 
     expect(worker.killSignals).toContain('SIGTERM')
+    const retirementTimer = harness.timers.find(
+      timer => timer.delayMs === 5_000 && !timer.cleared,
+    )
+    expect(retirementTimer).toBeDefined()
+    retirementTimer!.callback()
+    expect(worker.killSignals).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+
+  test('无状态 Worker 在宽限期内退出时取消强制终止', async () => {
+    const harness = new SupervisorHarness()
+    const request = harness.command('transcript-session', {
+      type: 'session.getTranscript',
+      cwd: '/tmp/project',
+      environment: {
+        variables: {},
+        configDir: '/tmp/catalog/config',
+      },
+      runtimeSessionId: '00000000-0000-4000-8000-000000000001',
+    })
+    await harness.supervisor.dispatch(request)
+
+    const worker = harness.workerForSession('transcript-session')
+    worker.emitRuntimeEvent(
+      'transcript-session',
+      {
+        type: 'response.success',
+        responseTo: request.requestId,
+        result: {
+          runtimeSessionId: '00000000-0000-4000-8000-000000000001',
+          messages: [],
+        },
+      },
+      request.requestId,
+    )
+    const retirementTimerIndex = harness.timers.findIndex(
+      timer => timer.delayMs === 5_000 && !timer.cleared,
+    )
+    expect(retirementTimerIndex).toBeGreaterThanOrEqual(0)
+    const retirementTimer = harness.timers[retirementTimerIndex]!
+
+    worker.exit(0, 'SIGTERM')
+
+    expect(retirementTimer.cleared).toBe(true)
+    harness.runTimer(retirementTimerIndex)
+    expect(worker.killSignals).toEqual(['SIGTERM'])
   })
 
   test('删除 Transcript 响应后立即回收无状态 Worker', async () => {
