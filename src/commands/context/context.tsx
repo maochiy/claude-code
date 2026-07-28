@@ -6,6 +6,7 @@ import { microcompactMessages } from '../../services/compact/microCompact.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import type { Message } from '../../types/message.js';
 import { analyzeContextUsage } from '../../utils/analyzeContext.js';
+import { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } from '../../utils/model/model.js';
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
 import { renderToAnsiString } from '../../utils/staticRender.js';
 
@@ -31,7 +32,7 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
   const {
     messages,
     getAppState,
-    options: { mainLoopModel, tools },
+    options: { tools },
   } = context;
 
   const apiView = toApiView(messages);
@@ -43,6 +44,9 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
   const terminalWidth = process.stdout.columns || 80;
 
   const appState = getAppState();
+  const mainLoopModel = parseUserSpecifiedModel(
+    appState.mainLoopModelForSession ?? appState.mainLoopModel ?? getDefaultMainLoopModelSetting(),
+  );
 
   // Analyze context with compacted messages
   // Pass original messages as last parameter for accurate API usage extraction

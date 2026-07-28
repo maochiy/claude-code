@@ -54,6 +54,19 @@ export function modelSupports1M(model: string): boolean {
   )
 }
 
+export function getEffectiveCapabilityContextWindow(
+  maxInputTokens: number | undefined,
+): number | undefined {
+  if (
+    maxInputTokens &&
+    maxInputTokens >= 100_000 &&
+    maxInputTokens <= MODEL_CONTEXT_WINDOW_DEFAULT
+  ) {
+    return maxInputTokens
+  }
+  return undefined
+}
+
 export function getContextWindowForModel(
   model: string,
   betas?: string[],
@@ -88,22 +101,18 @@ export function getContextWindowForModel(
     return 1_000_000
   }
 
-  const cap = getModelCapability(model)
-  if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
-    if (
-      cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
-      is1mContextDisabled()
-    ) {
-      return MODEL_CONTEXT_WINDOW_DEFAULT
-    }
-    return cap.max_input_tokens
-  }
-
   if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
     return 1_000_000
   }
   if (getSonnet1mExpTreatmentEnabled(model)) {
     return 1_000_000
+  }
+
+  const capabilityContextWindow = getEffectiveCapabilityContextWindow(
+    getModelCapability(model)?.max_input_tokens,
+  )
+  if (capabilityContextWindow) {
+    return capabilityContextWindow
   }
   if (process.env.USER_TYPE === 'ant') {
     const antModel = resolveAntModel(model)

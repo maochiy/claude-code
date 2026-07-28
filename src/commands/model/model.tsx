@@ -9,6 +9,7 @@ import {
 } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
+import type { Message } from '../../types/message.js';
 import type { EffortLevel } from '../../utils/effort.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import {
@@ -26,10 +27,13 @@ import {
 } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
+import { checkModelSwitchCapacity } from './modelSwitch.js';
 
 function ModelPickerWrapper({
+  messages,
   onDone,
 }: {
+  messages: readonly Message[];
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void;
 }): React.ReactNode {
   const mainLoopModel = useAppState(s => s.mainLoopModel);
@@ -47,7 +51,13 @@ function ModelPickerWrapper({
     });
   }
 
-  function handleSelect(model: string | null, effort: EffortLevel | undefined): void {
+  function handleSelect(model: string | null, effort: EffortLevel | undefined): boolean {
+    const capacityCheck = checkModelSwitchCapacity(model, messages);
+    if (!capacityCheck.allowed) {
+      onDone(capacityCheck.message, { display: 'system' });
+      return false;
+    }
+
     logEvent('tengu_model_command_menu', {
       action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -91,6 +101,7 @@ function ModelPickerWrapper({
     }
 
     onDone(message);
+    return true;
   }
 
   return (
@@ -109,9 +120,11 @@ function ModelPickerWrapper({
 
 function SetModelAndClose({
   args,
+  messages,
   onDone,
 }: {
   args: string;
+  messages: readonly Message[];
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void;
 }): React.ReactNode {
   const isFastMode = useAppState(s => s.fastMode);
@@ -177,6 +190,12 @@ function SetModelAndClose({
     }
 
     function setModel(modelValue: string | null): void {
+      const capacityCheck = checkModelSwitchCapacity(modelValue, messages);
+      if (!capacityCheck.allowed) {
+        onDone(capacityCheck.message, { display: 'system' });
+        return;
+      }
+
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,
@@ -213,7 +232,7 @@ function SetModelAndClose({
     }
 
     void handleModelChange();
-  }, [model, onDone, setAppState]);
+  }, [model, messages, onDone, setAppState]);
 
   return null;
 }
@@ -252,7 +271,7 @@ function ShowModelAndClose({ onDone }: { onDone: (result?: string) => void }): R
   return null;
 }
 
-export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   args = args?.trim() || '';
   if (COMMON_INFO_ARGS.includes(args)) {
     logEvent('tengu_model_command_inline_help', {
@@ -271,10 +290,10 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     logEvent('tengu_model_command_inline', {
       args: args as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     });
-    return <SetModelAndClose args={args} onDone={onDone} />;
+    return <SetModelAndClose args={args} messages={context.messages} onDone={onDone} />;
   }
 
-  return <ModelPickerWrapper onDone={onDone} />;
+  return <ModelPickerWrapper messages={context.messages} onDone={onDone} />;
 };
 
 function renderModelLabel(model: string | null): string {
