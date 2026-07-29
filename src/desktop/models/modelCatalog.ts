@@ -1,5 +1,10 @@
 import { resolve } from 'node:path'
 import { setOriginalCwd } from '../../bootstrap/state.js'
+import {
+  getAutoCompactThreshold,
+  getEffectiveContextWindowSize,
+  isAutoCompactEnabled,
+} from '../../services/compact/autoCompact.js'
 import { modelSupportsAutoMode } from '../../utils/betas.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import {
@@ -43,8 +48,10 @@ export function resolveDesktopModelCatalog(
   const kernelOptions = getModelOptions()
   const configuredModels = getConfiguredModels()
   const catalogModels =
-    configuredModels.length > 0 ? configuredModels : providerConfiguration.models
-  const models = catalogModels.map(configured => {
+    configuredModels.length > 0
+      ? configuredModels
+      : providerConfiguration.models
+  const resolvedEntries = catalogModels.map(configured => {
     const value = normalizeConfiguredModelId(configured.id).id
     const option = kernelOptions.find(
       candidate =>
@@ -54,8 +61,7 @@ export function resolveDesktopModelCatalog(
             getConfiguredDefaultModelId() ??
               providerConfiguration.defaultModel ??
               '',
-          )
-            .id === value),
+          ).id === value),
     )
     const resolvedModel =
       value === 'default'
@@ -80,28 +86,39 @@ export function resolveDesktopModelCatalog(
       : undefined
 
     return {
-      value,
-      displayName: configured.name ?? option?.label ?? value,
-      description:
-        configured.description ?? option?.description ?? configured.id,
-      contextWindow:
-        configuredModel?.contextWindow ??
-        getContextWindowForModel(resolvedModel),
-      supportsEffort,
-      supportedEffortLevels,
-      ...(supportsEffort
-        ? {
-            defaultEffortLevel: getDisplayedEffortLevel(
-              resolvedModel,
-              defaultEffort,
-            ),
-          }
-        : {}),
-      supportsAdaptiveThinking: modelSupportsAdaptiveThinking(resolvedModel),
-      supportsFastMode: isFastModeSupportedByModel(option?.value ?? value),
-      supportsAutoMode: modelSupportsAutoMode(resolvedModel),
+      model: {
+        value,
+        displayName: configured.name ?? option?.label ?? value,
+        description:
+          configured.description ?? option?.description ?? configured.id,
+        contextWindow:
+          configuredModel?.contextWindow ??
+          getContextWindowForModel(resolvedModel),
+        supportsEffort,
+        supportedEffortLevels,
+        ...(supportsEffort
+          ? {
+              defaultEffortLevel: getDisplayedEffortLevel(
+                resolvedModel,
+                defaultEffort,
+              ),
+            }
+          : {}),
+        supportsAdaptiveThinking: modelSupportsAdaptiveThinking(resolvedModel),
+        supportsFastMode: isFastModeSupportedByModel(option?.value ?? value),
+        supportsAutoMode: modelSupportsAutoMode(resolvedModel),
+      },
+      contextPolicy: {
+        model: value,
+        contextWindow:
+          configuredModel?.contextWindow ??
+          getContextWindowForModel(resolvedModel),
+        effectiveContextWindow: getEffectiveContextWindowSize(resolvedModel),
+        autoCompactThreshold: getAutoCompactThreshold(resolvedModel),
+      },
     }
   })
+  const models = resolvedEntries.map(entry => entry.model)
 
   const configuredDefaultModel =
     getConfiguredDefaultModelId() ?? providerConfiguration.defaultModel
@@ -115,5 +132,9 @@ export function resolveDesktopModelCatalog(
         ? normalizedDefaultModel
         : models[0]?.value,
     models,
+    contextPolicy: {
+      autoCompactEnabled: isAutoCompactEnabled(),
+      models: resolvedEntries.map(entry => entry.contextPolicy),
+    },
   }
 }

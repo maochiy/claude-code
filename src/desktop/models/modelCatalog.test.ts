@@ -49,6 +49,17 @@ describe('Desktop Runtime 模型目录', () => {
     expect(catalog.models[0]?.displayName).toBe('Private Reasoner')
     expect(catalog.models[0]?.supportsEffort).toBe(true)
     expect(catalog.models[0]?.supportedEffortLevels).toEqual(['low', 'high'])
+    expect(typeof catalog.contextPolicy.autoCompactEnabled).toBe('boolean')
+    expect(catalog.contextPolicy.models).toHaveLength(1)
+    expect(catalog.contextPolicy.models[0]?.model).toBe('private-reasoner')
+    expect(
+      catalog.contextPolicy.models[0]?.effectiveContextWindow,
+    ).toBeGreaterThan(0)
+    expect(
+      catalog.contextPolicy.models[0]?.autoCompactThreshold,
+    ).toBeLessThanOrEqual(
+      catalog.contextPolicy.models[0]?.effectiveContextWindow ?? 0,
+    )
   })
 
   test('模型 ID 的 1M 标记由 CCB 配置解析并返回真实上下文窗口', () => {
@@ -76,6 +87,10 @@ describe('Desktop Runtime 模型目录', () => {
     expect(catalog.defaultModel).toBe('claude-sonnet-4-6')
     expect(catalog.models[0]?.value).toBe('claude-sonnet-4-6')
     expect(catalog.models[0]?.contextWindow).toBe(1_000_000)
+    expect(catalog.contextPolicy.models[0]?.contextWindow).toBe(1_000_000)
+    expect(
+      catalog.contextPolicy.models[0]?.effectiveContextWindow,
+    ).toBeLessThan(1_000_000)
   })
 
   test('Desktop 显式传入模型目录时覆盖 CCB 用户原生目录', () => {

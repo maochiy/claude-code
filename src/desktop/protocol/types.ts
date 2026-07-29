@@ -2,7 +2,7 @@ import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { EffortLevel } from '../../utils/effort.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'
 
-export const DESKTOP_PROTOCOL_VERSION = 5
+export const DESKTOP_PROTOCOL_VERSION = 6
 export const DESKTOP_RUNTIME_NAME = 'claude-code-best'
 
 export type DesktopPermissionMode =
@@ -54,9 +54,22 @@ export interface RuntimeModelInfo {
   supportsAutoMode: boolean
 }
 
+export interface RuntimeContextPolicy {
+  model: string
+  contextWindow: number
+  effectiveContextWindow: number
+  autoCompactThreshold: number
+}
+
+export interface RuntimeContextPolicyCatalog {
+  autoCompactEnabled: boolean
+  models: RuntimeContextPolicy[]
+}
+
 export interface RuntimeModelCatalog {
   defaultModel?: string
   models: RuntimeModelInfo[]
+  contextPolicy: RuntimeContextPolicyCatalog
 }
 
 export interface RuntimeSessionSummary {
