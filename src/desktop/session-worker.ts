@@ -73,7 +73,11 @@ function scheduleExecutionGraphPublish(): void {
     executionGraphTimer = undefined
     void publishExecutionGraph().catch(error => {
       const message = error instanceof Error ? error.message : String(error)
-      send({ type: 'runtime.log', level: 'warn', message: `执行图同步失败: ${message}` })
+      send({
+        type: 'runtime.log',
+        level: 'warn',
+        message: `执行图同步失败: ${message}`,
+      })
     })
   }, 80)
   executionGraphTimer.unref?.()
@@ -112,6 +116,17 @@ function waitForInteraction(
 }
 
 const bridge: ClaudeCodeDesktopHostBridge = {
+  emitMessage: message => {
+    send({ type: 'runtime.message', message })
+  },
+  emitProgress: (phase, detail, data) => {
+    send({
+      type: 'runtime.progress',
+      phase,
+      ...(detail ? { detail } : {}),
+      ...(data ? { data } : {}),
+    })
+  },
   requestPermission: request =>
     waitForInteraction(request, {
       type: 'interaction.permissionRequested',
@@ -157,9 +172,9 @@ async function runTurnQueue(): Promise<void> {
       if (!next) break
       softInterruptRequested = false
       try {
-        const messages = session.submit(next.prompt, next.uuid)[
-          Symbol.asyncIterator
-        ]()
+        const messages = session
+          .submit(next.prompt, next.uuid)
+          [Symbol.asyncIterator]()
         const abortSignal = session.getAbortSignal()
         while (!abortSignal.aborted) {
           const result = await nextTurnMessageOrAbort(messages, abortSignal)
@@ -172,9 +187,9 @@ async function runTurnQueue(): Promise<void> {
           // 不再等待底层 AsyncIterator 自然关闭，避免内容已经完成但 Worker
           // 仍长期保持 running=true。
           if (
-            isTerminalTurnMessage(message)
-            || stopRequested
-            || softInterruptRequested
+            isTerminalTurnMessage(message) ||
+            stopRequested ||
+            softInterruptRequested
           ) {
             break
           }
@@ -252,7 +267,9 @@ async function handleCommand(
       return
     case 'session.list':
       if (session) {
-        throw new Error('已打开的 Session 不能读取 Session Catalog，请使用独立请求')
+        throw new Error(
+          '已打开的 Session 不能读取 Session Catalog，请使用独立请求',
+        )
       }
       sessionId = envelope.sessionId
       send(
@@ -266,7 +283,9 @@ async function handleCommand(
       return
     case 'session.getTranscript':
       if (session) {
-        throw new Error('已打开的 Session 不能读取其他 Transcript，请使用独立请求')
+        throw new Error(
+          '已打开的 Session 不能读取其他 Transcript，请使用独立请求',
+        )
       }
       sessionId = envelope.sessionId
       send(
@@ -280,7 +299,9 @@ async function handleCommand(
       return
     case 'session.delete':
       if (session) {
-        throw new Error('已打开的 Session 不能删除 Transcript，请先关闭 Session')
+        throw new Error(
+          '已打开的 Session 不能删除 Transcript，请先关闭 Session',
+        )
       }
       sessionId = envelope.sessionId
       send(

@@ -667,6 +667,10 @@ export async function compactConversation(
       ...postCompactFileAttachments,
       ...hookMessages,
     ] as Parameters<typeof roughTokenCountEstimationForMessages>[0])
+    // Desktop Runtime 直接消费 compact_boundary；附带压缩后的真实估算和摘要预览，
+    // 避免桌面端自行推测 CCB 的压缩结果。摘要仅保留预览，防止协议消息过大。
+    boundaryMarker.compactMetadata.postTokens = truePostCompactTokenCount
+    boundaryMarker.compactMetadata.summary = summary.slice(0, 2_000)
 
     // Extract compaction API usage metrics
     const compactionUsage = getTokenUsage(summaryResponse)

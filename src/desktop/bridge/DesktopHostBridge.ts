@@ -1,3 +1,4 @@
+import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { ChatGPTCredentialUpdate } from '../../services/api/openai/chatgptAuth.js'
 import type {
   RuntimeAskUserRequest,
@@ -7,6 +8,12 @@ import type {
 } from '../protocol/types.js'
 
 export interface ClaudeCodeDesktopHostBridge {
+  emitMessage(message: SDKMessage): void
+  emitProgress(
+    phase: string,
+    detail?: string,
+    data?: Record<string, unknown>,
+  ): void
   requestPermission(
     request: RuntimePermissionRequest,
   ): Promise<RuntimeInteractionResponse>

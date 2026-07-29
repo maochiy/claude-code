@@ -5,6 +5,11 @@ import { QueryEngine } from '../../QueryEngine.js'
 import { clearCommandsCache, getCommands } from '../../commands.js'
 import { initBuiltinPlugins } from '../../plugins/bundled/index.js'
 import { setChatGPTCredentialsUpdateHandler } from '../../services/api/openai/chatgptAuth.js'
+import {
+  getAutoCompactThreshold,
+  getEffectiveContextWindowSize,
+  isAutoCompactEnabled,
+} from '../../services/compact/autoCompact.js'
 import { getMcpToolsCommandsAndResources } from '../../services/mcp/client.js'
 import type {
   MCPServerConnection,
@@ -75,8 +80,23 @@ export interface HeadlessRuntimeSession {
   getMessages(): ReturnType<QueryEngine['getMessages']>
   getFileHistoryState(): AppState['fileHistory']
   getExecutionGraph(): Promise<RuntimeExecutionGraph>
-  getSubagentTranscript(executionNodeId: string): Promise<RuntimeSubagentTranscript>
+  getSubagentTranscript(
+    executionNodeId: string,
+  ): Promise<RuntimeSubagentTranscript>
   dispose(): Promise<void>
+}
+
+function emitContextCompactionConfig(
+  bridge: ClaudeCodeDesktopHostBridge,
+  model: string | undefined,
+): void {
+  if (!model) return
+  bridge.emitProgress('context.compactionConfig', undefined, {
+    model,
+    autoCompactEnabled: isAutoCompactEnabled(),
+    effectiveContextWindow: getEffectiveContextWindowSize(model),
+    autoCompactThreshold: getAutoCompactThreshold(model),
+  })
 }
 
 function toPermissionDecision(
@@ -261,8 +281,18 @@ export async function createHeadlessRuntimeSession(
     maxBudgetUsd: options.maxBudgetUsd,
     includePartialMessages: options.includePartialMessages ?? true,
     replayUserMessages: true,
+    setSDKStatus: status => {
+      bridge.emitMessage({
+        type: 'system',
+        subtype: 'status',
+        status: status === 'compacting' ? 'compacting' : null,
+        session_id: runtimeSessionId,
+        uuid: randomUUID(),
+      } as SDKMessage)
+    },
   })
   if (options.model) engine.setModel(options.model)
+  emitContextCompactionConfig(bridge, options.model)
 
   return {
     runtimeSessionId,
@@ -282,6 +312,7 @@ export async function createHeadlessRuntimeSession(
     },
     setModel: model => {
       engine.setModel(model)
+      emitContextCompactionConfig(bridge, model)
     },
     setThinkingConfig: thinkingConfig => {
       engine.setThinkingConfig(thinkingConfig)

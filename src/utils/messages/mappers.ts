@@ -83,9 +83,13 @@ export function toSDKCompactMetadata(
   const seg = meta.preservedSegment as
     | { headUuid: UUID; anchorUuid: UUID; tailUuid: UUID }
     | undefined
+  const postTokens = meta.postTokens
+  const summary = meta.summary
   return {
     trigger: meta.trigger,
     pre_tokens: meta.preTokens,
+    ...(typeof postTokens === 'number' && { post_tokens: postTokens }),
+    ...(typeof summary === 'string' && summary.length > 0 && { summary }),
     ...(seg && {
       preserved_segment: {
         head_uuid: seg.headUuid,
@@ -110,12 +114,17 @@ export function fromSDKCompactMetadata(
     }
     trigger?: string
     pre_tokens?: number
+    post_tokens?: number
+    summary?: string
     [key: string]: unknown
   }
   const seg = m.preserved_segment
   return {
     trigger: m.trigger,
     preTokens: m.pre_tokens,
+    ...(typeof m.post_tokens === 'number' && { postTokens: m.post_tokens }),
+    ...(typeof m.summary === 'string' &&
+      m.summary.length > 0 && { summary: m.summary }),
     ...(seg && {
       preservedSegment: {
         headUuid: seg.head_uuid,

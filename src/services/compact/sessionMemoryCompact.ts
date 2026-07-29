@@ -485,6 +485,9 @@ function createCompactionResultFromSessionMemory(
 
   const planAttachment = createPlanAttachmentIfNeeded(agentId)
   const attachments = planAttachment ? [planAttachment] : []
+  const estimatedPostCompactTokens = estimateMessageTokens(summaryMessages)
+  boundaryMarker.compactMetadata.postTokens = estimatedPostCompactTokens
+  boundaryMarker.compactMetadata.summary = truncatedContent.slice(0, 2_000)
 
   return {
     boundaryMarker: annotateBoundaryWithPreservedSegment(
@@ -499,8 +502,8 @@ function createCompactionResultFromSessionMemory(
     preCompactTokenCount,
     // SM-compact has no compact-API-call, so postCompactTokenCount (kept for
     // event continuity) and truePostCompactTokenCount converge to the same value.
-    postCompactTokenCount: estimateMessageTokens(summaryMessages),
-    truePostCompactTokenCount: estimateMessageTokens(summaryMessages),
+    postCompactTokenCount: estimatedPostCompactTokens,
+    truePostCompactTokenCount: estimatedPostCompactTokens,
   }
 }
 
