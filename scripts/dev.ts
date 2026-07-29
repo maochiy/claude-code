@@ -59,11 +59,9 @@ const result = Bun.spawnSync(
     cwd: projectRoot,
     env: {
       ...process.env,
-      // Keep the model-catalog refactor isolated from the developer's real
-      // ~/.claude/settings.json until the new /login flow is verified.
+      // Use the standard user settings file unless explicitly overridden.
       CLAUDE_CODE_USER_SETTINGS_FILE:
-        process.env.CLAUDE_CODE_USER_SETTINGS_FILE ??
-        'settings-models-v2-test.json',
+        process.env.CLAUDE_CODE_USER_SETTINGS_FILE ?? 'settings.json',
     },
   },
 )

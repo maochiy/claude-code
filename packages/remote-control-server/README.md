@@ -61,7 +61,7 @@ export CLAUDE_BRIDGE_OAUTH_TOKEN="your-api-key-here"
 然后启动远程控制模式：
 
 ```bash
-ccb --remote-control
+ccx --remote-control
 ```
 
 > **注意**：远程控制功能需要启用 `BRIDGE_MODE` feature flag。开发模式下默认启用。

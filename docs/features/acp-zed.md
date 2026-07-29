@@ -55,9 +55,9 @@ ACP (Agent Client Protocol) 是一种标准化的 stdio 协议，允许 IDE 和�
 ```json
 {
   "agent_servers": {
-    "ccb": {
+    "ccx": {
       "type": "custom",
-      "command": "ccb",
+      "command": "ccx",
       "args": ["--acp"]
     }
   }
@@ -66,7 +66,7 @@ ACP (Agent Client Protocol) 是一种标准化的 stdio 协议，允许 IDE 和�
 
 ### 3.3 API 认证配置
 
-CCB 的 ACP agent 在启动时会自动加载 `settings.json` 中的环境变量（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 等）。确保已通过 `/login` 配置好 API 供应商。
+CCX 的 ACP agent 在启动时会自动加载 `settings.json` 中的环境变量（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 等）。确保已通过 `/login` 配置好 API 供应商。
 
 也可通过环境变量传入：
 
@@ -74,7 +74,7 @@ CCB 的 ACP agent 在启动时会自动加载 `settings.json` 中的环境变量
 {
   "agent_servers": {
     "claude-code": {
-      "command": "ccb",
+      "command": "ccx",
       "args": ["--acp"],
       "env": {
         "ANTHROPIC_BASE_URL": "https://api.example.com/v1",
@@ -106,10 +106,10 @@ CCB 的 ACP agent 在启动时会自动加载 `settings.json` 中的环境变量
 
 ## 四、配置其他 ACP 客户端
 
-ACP 是开放协议，任何支持 ACP 的客户端都可以连接 CCB。通用配置模式：
+ACP 是开放协议，任何支持 ACP 的客户端都可以连接 CCX。通用配置模式：
 
 ```
-命令: ccb --acp
+命令: ccx --acp
 参数: ["--acp"]
 通信: stdin/stdout NDJSON
 协议版本: ACP v1
@@ -117,7 +117,7 @@ ACP 是开放协议，任何支持 ACP 的客户端都可以连接 CCB。通用�
 
 ### 4.1 Cursor
 
-在 Cursor 的设置中配置 MCP / Agent Server，使用同样的 `ccb --acp` 命令。
+在 Cursor 的设置中配置 MCP / Agent Server，使用同样的 `ccx --acp` 命令。
 
 ### 4.2 自定义客户端
 
@@ -126,8 +126,8 @@ ACP 是开放协议，任何支持 ACP 的客户端都可以连接 CCB。通用�
 ```typescript
 import { ClientSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 
-// 创建连接（将 ccb --acp 作为子进程启动）
-const child = spawn('ccb', ['--acp'])
+// 创建连接（将 ccx --acp 作为子进程启动）
+const child = spawn('ccx', ['--acp'])
 const stream = ndJsonStream(
   Writable.toWeb(child.stdin),
   Readable.toWeb(child.stdout),
