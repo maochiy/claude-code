@@ -36,6 +36,16 @@ import {
   nextTurnMessageOrAbort,
   TurnIdleBarrier,
 } from './turnLifecycle.js'
+import {
+  buildBackgroundContinuationPrompt,
+  hasActiveBackgroundExecutionNodes,
+  isMainThreadTaskNotification,
+} from './backgroundTurnContinuation.js'
+import {
+  dequeueAllMatching,
+  getCommandQueueSnapshot,
+  subscribeToCommandQueue,
+} from '../utils/messageQueueManager.js'
 
 interface PendingInteraction {
   resolve: (response: RuntimeInteractionResponse) => void
@@ -54,17 +64,21 @@ let lastExecutionGraphFingerprint = ''
 const turnQueue: Array<{ prompt: string; uuid?: string }> = []
 const pendingInteractions = new Map<string, PendingInteraction>()
 const turnIdleBarrier = new TurnIdleBarrier()
+let wakeBackgroundNotificationWait: (() => void) | undefined
 
-async function publishExecutionGraph(force: boolean = false): Promise<void> {
-  if (!session) return
+async function publishExecutionGraph(
+  force: boolean = false,
+): Promise<Awaited<ReturnType<HeadlessRuntimeSession['getExecutionGraph']>> | undefined> {
+  if (!session) return undefined
   const graph = await session.getExecutionGraph()
   const fingerprint = JSON.stringify({
     nodes: graph.nodes,
     todos: graph.todos,
   })
-  if (!force && fingerprint === lastExecutionGraphFingerprint) return
+  if (!force && fingerprint === lastExecutionGraphFingerprint) return graph
   lastExecutionGraphFingerprint = fingerprint
   send({ type: 'runtime.executionGraphChanged', graph })
+  return graph
 }
 
 function scheduleExecutionGraphPublish(): void {
@@ -156,6 +170,86 @@ const bridge: ClaudeCodeDesktopHostBridge = {
   },
 }
 
+function hasPendingMainThreadTaskNotification(): boolean {
+  return getCommandQueueSnapshot().some(isMainThreadTaskNotification)
+}
+
+function takeBackgroundContinuationPrompt(): string | undefined {
+  return buildBackgroundContinuationPrompt(
+    dequeueAllMatching(isMainThreadTaskNotification),
+  )
+}
+
+/** 后台 Agent 等待不设超时；Stop、新消息或完成通知都会立即唤醒。 */
+function waitForBackgroundNotification(): Promise<void> {
+  if (
+    stopRequested
+    || softInterruptRequested
+    || turnQueue.length > 0
+    || hasPendingMainThreadTaskNotification()
+  ) {
+    return Promise.resolve()
+  }
+
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      unsubscribe()
+      if (wakeBackgroundNotificationWait === finish) {
+        wakeBackgroundNotificationWait = undefined
+      }
+      resolve()
+    }
+    const unsubscribe = subscribeToCommandQueue(() => {
+      if (hasPendingMainThreadTaskNotification()) finish()
+    })
+    wakeBackgroundNotificationWait = finish
+    if (
+      stopRequested
+      || softInterruptRequested
+      || turnQueue.length > 0
+      || hasPendingMainThreadTaskNotification()
+    ) {
+      finish()
+    }
+  })
+}
+
+async function executeSessionPrompt(
+  prompt: string,
+  uuid?: string,
+  isMeta: boolean = false,
+): Promise<SDKMessage | undefined> {
+  if (!session) return undefined
+  let last: SDKMessage | undefined
+  const messages = session
+    .submit(prompt, uuid, isMeta)
+    [Symbol.asyncIterator]()
+  const abortSignal = session.getAbortSignal()
+  try {
+    while (!abortSignal.aborted) {
+      const result = await nextTurnMessageOrAbort(messages, abortSignal)
+      if (result.done || abortSignal.aborted) break
+      const message = result.value
+      last = message
+      send({ type: 'runtime.message', message })
+      scheduleExecutionGraphPublish()
+      if (
+        isTerminalTurnMessage(message)
+        || stopRequested
+        || softInterruptRequested
+      ) {
+        break
+      }
+    }
+    return last
+  } finally {
+    session.resetAfterInterrupt()
+  }
+}
+
 async function runTurnQueue(): Promise<void> {
   if (!session || running || turnQueue.length === 0) return
   running = true
@@ -172,27 +266,46 @@ async function runTurnQueue(): Promise<void> {
       if (!next) break
       softInterruptRequested = false
       try {
-        const messages = session
-          .submit(next.prompt, next.uuid)
-          [Symbol.asyncIterator]()
-        const abortSignal = session.getAbortSignal()
-        while (!abortSignal.aborted) {
-          const result = await nextTurnMessageOrAbort(messages, abortSignal)
-          if (result.done || abortSignal.aborted) break
-          const message = result.value
-          last = message
-          send({ type: 'runtime.message', message })
-          scheduleExecutionGraphPublish()
-          // QueryEngine 的 result 是当前 Turn 的明确终止边界。Desktop Runtime
-          // 不再等待底层 AsyncIterator 自然关闭，避免内容已经完成但 Worker
-          // 仍长期保持 running=true。
+        last = (await executeSessionPrompt(next.prompt, next.uuid)) ?? last
+
+        // 父模型文本结束不等于 CCB 原生后台子智能体结束。只要执行图仍有
+        // queued/running 节点，Worker 保持 busy，等待完成通知后通过隐藏
+        // meta Turn 让父模型处理结果并继续任务。
+        while (
+          !stopRequested
+          && !softInterruptRequested
+          && turnQueue.length === 0
+        ) {
+          const graph = await publishExecutionGraph(true)
+          let continuationPrompt = takeBackgroundContinuationPrompt()
           if (
-            isTerminalTurnMessage(message) ||
-            stopRequested ||
-            softInterruptRequested
+            !continuationPrompt
+            && graph
+            && hasActiveBackgroundExecutionNodes(graph)
           ) {
-            break
+            await waitForBackgroundNotification()
+            if (
+              stopRequested
+              || softInterruptRequested
+              || turnQueue.length > 0
+            ) {
+              break
+            }
+            continuationPrompt = takeBackgroundContinuationPrompt()
           }
+          if (!continuationPrompt) break
+          last = (
+            await executeSessionPrompt(
+              continuationPrompt,
+              undefined,
+              true,
+            )
+          ) ?? last
+        }
+        if (softInterruptRequested) {
+          // 若 Interrupt 发生在后台通知等待阶段，此时没有活跃迭代器负责重置
+          // AbortController；必须在处理插队的新消息前恢复下一轮可用状态。
+          session.resetAfterInterrupt()
         }
       } catch (error) {
         if (!stopRequested && !softInterruptRequested) {
@@ -209,13 +322,12 @@ async function runTurnQueue(): Promise<void> {
           })
           return
         }
-      } finally {
-        session.resetAfterInterrupt()
       }
     }
     await publishExecutionGraph(true)
     send({ type: 'turn.completed', result: last })
   } finally {
+    session.resetAfterInterrupt()
     running = false
     stopRequested = false
     softInterruptRequested = false
@@ -371,6 +483,7 @@ async function handleCommand(
       return
     case 'turn.enqueue':
       turnQueue.push({ prompt: command.prompt, uuid: command.uuid })
+      wakeBackgroundNotificationWait?.()
       send(
         { type: 'response.success', responseTo: envelope.requestId },
         envelope.requestId,
@@ -382,6 +495,7 @@ async function handleCommand(
       session?.interrupt()
       if (command.prompt)
         turnQueue.unshift({ prompt: command.prompt, uuid: command.uuid })
+      wakeBackgroundNotificationWait?.()
       send(
         { type: 'response.success', responseTo: envelope.requestId },
         envelope.requestId,
@@ -392,6 +506,7 @@ async function handleCommand(
       stopRequested = true
       turnQueue.length = 0
       session?.interrupt()
+      wakeBackgroundNotificationWait?.()
       // Stop 的成功响应表示 QueryEngine 已真正退出、Worker 已回到 ready，
       // 而不是仅表示“已收到停止命令”。Proma 只有在该 Promise 完成后才能
       // 清除 UI 的运行状态。
@@ -568,6 +683,8 @@ async function handleCommand(
     }
     case 'session.suspend':
       if (running) session?.interrupt()
+      stopRequested = true
+      wakeBackgroundNotificationWait?.()
       send({
         type: 'session.stateChanged',
         state: 'suspended',
@@ -580,6 +697,8 @@ async function handleCommand(
       return
     case 'session.close':
       cancelPendingInteractions('Runtime Session 已关闭')
+      stopRequested = true
+      wakeBackgroundNotificationWait?.()
       if (executionGraphTimer) clearTimeout(executionGraphTimer)
       executionGraphTimer = undefined
       lastExecutionGraphFingerprint = ''
@@ -635,6 +754,8 @@ process.on('message', (value: unknown) => {
 
 async function shutdownWorker(reason: string): Promise<void> {
   cancelPendingInteractions(reason)
+  stopRequested = true
+  wakeBackgroundNotificationWait?.()
   try {
     await session?.dispose()
   } finally {

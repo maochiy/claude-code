@@ -67,7 +67,11 @@ import {
 
 export interface HeadlessRuntimeSession {
   readonly runtimeSessionId: string
-  submit(prompt: string, uuid?: string): AsyncIterable<SDKMessage>
+  submit(
+    prompt: string,
+    uuid?: string,
+    isMeta?: boolean,
+  ): AsyncIterable<SDKMessage>
   interrupt(): void
   getAbortSignal(): AbortSignal
   resetAfterInterrupt(): void
@@ -296,8 +300,11 @@ export async function createHeadlessRuntimeSession(
 
   return {
     runtimeSessionId,
-    submit: (prompt, uuid) =>
-      engine.submitMessage(prompt, { uuid: uuid as UUID | undefined }),
+    submit: (prompt, uuid, isMeta) =>
+      engine.submitMessage(prompt, {
+        uuid: uuid as UUID | undefined,
+        isMeta,
+      }),
     interrupt: () => engine.interrupt(),
     getAbortSignal: () => engine.getAbortSignal(),
     resetAfterInterrupt: () => engine.resetAbortController(),

@@ -1,4 +1,5 @@
 import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
+import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { TaskState } from '../../tasks/types.js'
 import { asAgentId } from '../../types/ids.js'
@@ -58,16 +59,97 @@ function taskTranscriptAgentId(task: TaskState): string | undefined {
   return undefined
 }
 
+function sdkMessageUuid(message: SDKMessage): string | undefined {
+  const uuid = (message as unknown as Record<string, unknown>).uuid
+  return typeof uuid === 'string' && uuid.length > 0 ? uuid : undefined
+}
+
+function sdkUserText(message: SDKMessage): string | undefined {
+  if (message.type !== 'user') return undefined
+  const record = message as unknown as Record<string, unknown>
+  const inner = record.message
+  if (!inner || typeof inner !== 'object') return undefined
+  const content = (inner as Record<string, unknown>).content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return undefined
+
+  const text = content.flatMap(block => {
+    if (!block || typeof block !== 'object') return []
+    const blockRecord = block as Record<string, unknown>
+    return blockRecord.type === 'text' && typeof blockRecord.text === 'string'
+      ? [blockRecord.text]
+      : []
+  }).join('\n')
+  return text.length > 0 ? text : undefined
+}
+
+/**
+ * 磁盘 Transcript 是完整历史，AppState messages 是运行中的最新镜像。
+ * 以磁盘顺序为基线并用相同 UUID 的内存消息覆盖，避免 UI 在运行期间只看到
+ * 被截断的内存尾部，也确保子智能体首条提示词不会短暂丢失。
+ */
+function mergeTaskMessages(
+  persisted: SDKMessage[],
+  inMemory: SDKMessage[],
+): SDKMessage[] {
+  const merged = [...persisted]
+  const indexByUuid = new Map<string, number>()
+  merged.forEach((message, index) => {
+    const uuid = sdkMessageUuid(message)
+    if (uuid) indexByUuid.set(uuid, index)
+  })
+
+  for (const message of inMemory) {
+    const uuid = sdkMessageUuid(message)
+    const existingIndex = uuid ? indexByUuid.get(uuid) : undefined
+    if (existingIndex !== undefined) {
+      merged[existingIndex] = message
+      continue
+    }
+    if (uuid) indexByUuid.set(uuid, merged.length)
+    merged.push(message)
+  }
+  return merged
+}
+
+function ensureTaskPrompt(
+  task: TaskState,
+  messages: SDKMessage[],
+): SDKMessage[] {
+  if (task.type !== 'local_agent' && task.type !== 'in_process_teammate') {
+    return messages
+  }
+  const prompt = task.prompt.trim()
+  if (prompt.length === 0) return messages
+  const hasPrompt = messages.some(message => {
+    const text = sdkUserText(message)?.trim()
+    if (!text) return false
+    if (text === prompt) return true
+    return task.type === 'in_process_teammate'
+      && text.startsWith(`<${TEAMMATE_MESSAGE_TAG} `)
+      && text.includes(`\n${prompt}\n</${TEAMMATE_MESSAGE_TAG}>`)
+  })
+  if (hasPrompt) return messages
+
+  return [{
+    type: 'user',
+    message: {
+      role: 'user',
+      content: prompt,
+    },
+    parent_tool_use_id: null,
+    uuid: `desktop-task-prompt-${task.id}`,
+  } as SDKMessage, ...messages]
+}
+
 async function taskMessages(task: TaskState): Promise<SDKMessage[]> {
   const inMemory = taskMessagesInMemory(task)
-  if (inMemory.length > 0) return inMemory
-
   const agentId = taskTranscriptAgentId(task)
-  if (!agentId) return []
-  const transcript = await getAgentTranscript(asAgentId(agentId)).catch(
-    () => null,
-  )
-  return transcript ? toSDKMessages(transcript.messages) : []
+  const transcript = agentId
+    ? await getAgentTranscript(asAgentId(agentId)).catch(() => null)
+    : null
+  const persisted = transcript ? toSDKMessages(transcript.messages) : []
+  return ensureTaskPrompt(task, mergeTaskMessages(persisted, inMemory))
 }
 
 function taskTranscriptAvailable(task: TaskState): boolean {

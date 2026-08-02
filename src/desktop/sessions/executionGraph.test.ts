@@ -24,6 +24,7 @@ function appStateWithTasks(): AppState {
         type: 'local_agent',
         status: 'running',
         description: '扫描代码',
+        prompt: '检查项目',
         startTime: 10,
         toolUseId: 'tool-agent-1',
         agentType: 'Explore',
@@ -35,6 +36,7 @@ function appStateWithTasks(): AppState {
         type: 'in_process_teammate',
         status: 'completed',
         description: '审查变更',
+        prompt: '请审查当前变更',
         startTime: 20,
         endTime: 30,
         toolUseId: 'tool-teammate-1',
@@ -91,6 +93,72 @@ describe('Desktop Runtime CCB 执行图', () => {
         status: 'in_progress',
       }),
     )
+  })
+
+  test('Given CCB 运行中内存消息缺少首条提示词 When 读取 Transcript Then 自动补齐发送提示词', async () => {
+    const state = appStateWithTasks()
+    const task = state.tasks['agent-1']
+    if (!task || task.type !== 'local_agent') {
+      throw new Error('测试数据缺少 local_agent')
+    }
+    task.messages = [{
+      type: 'assistant',
+      uuid: '00000000-0000-4000-8000-000000000011',
+      timestamp: '2026-07-28T00:00:01.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '正在检查' }],
+      },
+    } as Message]
+
+    const transcript = await resolveRuntimeSubagentTranscript(
+      state,
+      'agent-1',
+    )
+
+    expect(transcript.messages[0]).toMatchObject({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: '检查项目',
+      },
+    })
+    expect(transcript.messages[1]).toMatchObject({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'text', text: '正在检查' }],
+      },
+    })
+  })
+
+  test('Given CCB Teammate 已保存包装后的首条提示词 When 读取 Transcript Then 不重复补齐纯文本提示词', async () => {
+    const state = appStateWithTasks()
+    const task = state.tasks['teammate-1']
+    if (!task || task.type !== 'in_process_teammate') {
+      throw new Error('测试数据缺少 in_process_teammate')
+    }
+    task.messages = [{
+      type: 'user',
+      uuid: '00000000-0000-4000-8000-000000000012',
+      timestamp: '2026-07-28T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: '<teammate-message teammate_id="team-lead" summary="审查变更">\n请审查当前变更\n</teammate-message>',
+      },
+    } as Message]
+
+    const transcript = await resolveRuntimeSubagentTranscript(
+      state,
+      'teammate-1',
+    )
+
+    expect(transcript.messages).toHaveLength(1)
+    expect(transcript.messages[0]).toMatchObject({
+      type: 'user',
+      message: {
+        content: expect.stringContaining('请审查当前变更'),
+      },
+    })
   })
 
   test('Given CCB 子代理消息 When 读取 Transcript Then 使用 SDKMessage wire shape', async () => {
