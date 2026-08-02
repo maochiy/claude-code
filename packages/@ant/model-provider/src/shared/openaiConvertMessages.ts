@@ -19,6 +19,16 @@ export interface ConvertMessagesOptions {
   enableThinking?: boolean
 }
 
+interface OpenAIImagePart {
+  type: 'image_url'
+  image_url: { url: string }
+}
+
+interface ConvertedToolResult {
+  message: ChatCompletionToolMessageParam
+  imageParts: OpenAIImagePart[]
+}
+
 /**
  * Convert internal (UserMessage | AssistantMessage)[] to OpenAI-format messages.
  *
@@ -81,8 +91,7 @@ function convertInternalUserMessage(
   } else if (Array.isArray(content)) {
     const textParts: string[] = []
     const toolResults: BetaToolResultBlockParam[] = []
-    const imageParts: Array<{ type: 'image_url'; image_url: { url: string } }> =
-      []
+    const imageParts: OpenAIImagePart[] = []
 
     for (const block of content) {
       if (typeof block === 'string') {
@@ -106,7 +115,9 @@ function convertInternalUserMessage(
     // message with tool_calls. If we emit a user message first, the API will
     // reject the request with "insufficient tool messages following tool_calls".
     for (const tr of toolResults) {
-      result.push(convertToolResult(tr))
+      const converted = convertToolResult(tr)
+      result.push(converted.message)
+      imageParts.push(...converted.imageParts)
     }
 
     // 如果有图片，构建多模态 content 数组
@@ -136,8 +147,9 @@ function convertInternalUserMessage(
 
 function convertToolResult(
   block: BetaToolResultBlockParam,
-): ChatCompletionToolMessageParam {
+): ConvertedToolResult {
   let content: string
+  const imageParts: OpenAIImagePart[] = []
   if (typeof block.content === 'string') {
     content = block.content
   } else if (Array.isArray(block.content)) {
@@ -145,6 +157,14 @@ function convertToolResult(
       .map(c => {
         if (typeof c === 'string') return c
         if ('text' in c) return c.text
+        if (c.type === 'image') {
+          const imagePart = convertImageBlockToOpenAI(
+            c as unknown as Record<string, unknown>,
+          )
+          if (imagePart) {
+            imageParts.push(imagePart)
+          }
+        }
         return ''
       })
       .filter(Boolean)
@@ -154,10 +174,13 @@ function convertToolResult(
   }
 
   return {
-    role: 'tool',
-    tool_call_id: block.tool_use_id,
-    content,
-  } satisfies ChatCompletionToolMessageParam
+    message: {
+      role: 'tool',
+      tool_call_id: block.tool_use_id,
+      content,
+    } satisfies ChatCompletionToolMessageParam,
+    imageParts,
+  }
 }
 
 function convertInternalAssistantMessage(
@@ -240,7 +263,7 @@ function convertInternalAssistantMessage(
  */
 function convertImageBlockToOpenAI(
   block: Record<string, unknown>,
-): { type: 'image_url'; image_url: { url: string } } | null {
+): OpenAIImagePart | null {
   const source = block.source as Record<string, unknown> | undefined
   if (!source) return null
 

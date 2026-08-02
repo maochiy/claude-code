@@ -22,8 +22,10 @@ import type {
 import { DESKTOP_PROTOCOL_VERSION } from '../src/desktop/protocol/types.js'
 import { assertCapabilityParity } from '../src/desktop/capabilities/manifest.js'
 import { DESKTOP_PROTOCOL_JSON_SCHEMA } from '../src/desktop/protocol/schema.js'
+import { copySharpNativeDependencies } from './sharp-native-packaging.js'
 
 const outdir = 'dist-desktop'
+const imageRuntimeSmokeEntrypoint = 'image-runtime-smoke.js'
 const desktopBuildFeatures = DEFAULT_BUILD_FEATURES.filter(
   feature => feature !== 'ACP',
 )
@@ -34,7 +36,11 @@ await rm(outdir, { recursive: true, force: true })
 await mkdir(outdir, { recursive: true })
 
 const result = await Bun.build({
-  entrypoints: ['src/desktop/entry.ts', 'src/desktop/session-worker.ts'],
+  entrypoints: [
+    'src/desktop/entry.ts',
+    'src/desktop/session-worker.ts',
+    'src/desktop/image-runtime-smoke.ts',
+  ],
   outdir,
   target: 'node',
   splitting: true,
@@ -60,6 +66,21 @@ await cp('vendor/audio-capture', join(outdir, 'native', 'audio-capture'), {
 await cp('src/utils/vendor/ripgrep', join(outdir, 'native', 'ripgrep'), {
   recursive: true,
 })
+const sharpPackages = await copySharpNativeDependencies(outdir)
+console.log(
+  `[desktop-runtime] 已打包 Sharp 原生依赖: ${sharpPackages.join(', ')}`,
+)
+
+const smokeModule = (await import(
+  `${pathToFileURL(join(outdir, imageRuntimeSmokeEntrypoint)).href}?build=${Date.now()}`
+)) as {
+  verifyDesktopImageRuntime(): Promise<void>
+}
+await smokeModule.verifyDesktopImageRuntime()
+await rm(join(outdir, imageRuntimeSmokeEntrypoint), { force: true })
+await rm(join(outdir, `${imageRuntimeSmokeEntrypoint}.map`), { force: true })
+console.log('[desktop-runtime] 2560x1330 图片缩放冒烟验证通过')
+
 await writeFile(
   join(outdir, 'protocol.schema.json'),
   JSON.stringify(DESKTOP_PROTOCOL_JSON_SCHEMA, null, 2),
