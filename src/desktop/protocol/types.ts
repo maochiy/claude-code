@@ -125,6 +125,11 @@ export interface RuntimeExecutionNode {
   model?: string
   agentType?: string
   teamName?: string
+  /**
+   * 节点是否需要阻塞父 Turn 完成。
+   * detach 用于长期监控类任务：节点可以继续存活，但父模型应回到等待用户状态。
+   */
+  turnCompletionPolicy?: 'wait' | 'detach'
 }
 
 export interface RuntimeTodoItem {

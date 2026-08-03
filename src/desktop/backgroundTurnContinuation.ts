@@ -1,12 +1,19 @@
 import type { RuntimeExecutionGraph } from './protocol/types.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
 
-/** CCB 原生后台节点仍在执行时，Desktop Turn 不能提前结束。 */
+/**
+ * 需要父模型处理完成通知的后台节点仍在执行时，Desktop Turn 不能提前结束。
+ *
+ * 长期监控类节点使用 detach：它们可以跨 Turn 存活，但不能让模型已经 end_turn
+ * 后仍把 Worker 卡在 busy。
+ */
 export function hasActiveBackgroundExecutionNodes(
   graph: RuntimeExecutionGraph,
 ): boolean {
   return graph.nodes.some(
-    node => node.status === 'queued' || node.status === 'running',
+    node =>
+      node.turnCompletionPolicy !== 'detach'
+      && (node.status === 'queued' || node.status === 'running'),
   )
 }
 

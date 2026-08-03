@@ -42,6 +42,14 @@ function toNodeStatus(status: TaskState['status']): RuntimeExecutionNodeStatus {
   }
 }
 
+function toTurnCompletionPolicy(
+  task: TaskState,
+): RuntimeExecutionNode['turnCompletionPolicy'] {
+  return task.type === 'monitor_mcp' || task.type === 'dream'
+    ? 'detach'
+    : 'wait'
+}
+
 function optionalString(
   value: unknown,
 ): string | undefined {
@@ -198,6 +206,7 @@ function toExecutionNode(task: TaskState): RuntimeExecutionNode {
     agentType: optionalString(record.agentType),
     teamName: optionalString(identity?.teamName),
     parentId: optionalString(record.parentTaskId),
+    turnCompletionPolicy: toTurnCompletionPolicy(task),
   }
 }
 
