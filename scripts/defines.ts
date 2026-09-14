@@ -93,6 +93,8 @@ export const DEFAULT_BUILD_FEATURES = [
   // 'TEAMMEM',                  // 已禁用：依赖 COORDINATOR_MODE，邮箱文件无限增长
   // SSH Remote
   'SSH_REMOTE', // SSH 远程连接，本地 REPL + 远端工具执行
+  // 自研浏览器控制链路（packages/browser-use + Browser* 工具）
+  'BROWSER_USE', // 浏览器后台控制（native messaging + chrome.debugger，会话标签组）
   // Autofix PR
   'AUTOFIX_PR', // /autofix-pr 命令（fork 引入；docs/jira/AUTOFIX-PR-001.md 承诺默认开启）
   // Persistent thread goal command — auto-continuation, JSONL persistence,

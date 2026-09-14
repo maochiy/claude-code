@@ -135,6 +135,11 @@ const WebBrowserTool = feature('WEB_BROWSER_TOOL')
   ? require('@claude-code-best/builtin-tools/tools/WebBrowserTool/WebBrowserTool.js')
       .WebBrowserTool
   : null
+const browserUseTools = feature('BROWSER_USE')
+  ? (
+      require('@claude-code-best/builtin-tools/tools/BrowserTool/index.js') as typeof import('@claude-code-best/builtin-tools/tools/BrowserTool/index.js')
+    ).browserTools
+  : []
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
   : null
@@ -244,6 +249,7 @@ export function getAllBaseTools(): Tools {
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
     ...(WebBrowserTool ? [WebBrowserTool] : []),
+    ...browserUseTools,
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),

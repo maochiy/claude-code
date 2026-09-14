@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>CCX 会话浏览器</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>CCX 会话浏览器</h1>
+        <p id="status" class="muted">正在连接…</p>
+      </header>
+      <section>
+        <div class="section-head">
+          <h2>会话分组</h2>
+          <button id="refresh" class="ghost">刷新</button>
+        </div>
+        <ul id="sessions" class="sessions"></ul>
+        <p id="empty" class="muted">
+          还没有会话在使用浏览器。CCX 会话第一次操作浏览器时会自动创建分组。
+        </p>
+      </section>
+      <footer class="muted">
+        每个分组对应一个 CCX 会话，分组名就是会话名；分组里的标签都在后台运行，不会切换你当前正在看的页面。
+      </footer>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

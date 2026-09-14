@@ -92,6 +92,19 @@ const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
 await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
 console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 
+// Copy browser-use Chrome extension (feature BROWSER_USE) so built artifacts
+// ship with it. The extension has its own build (packages/browser-use/extension);
+// skip silently if it hasn't been built yet.
+const extensionDir = join(outdir, 'extension')
+try {
+  await cp('packages/browser-use/extension/dist', extensionDir, {
+    recursive: true,
+  })
+  console.log(`Copied packages/browser-use/extension/dist/ → ${extensionDir}/`)
+} catch {
+  console.log('Skipped browser-use extension copy (extension/dist not built)')
+}
+
 // Step 5: Generate cli-bun and cli-node executable entry points
 const cliBun = join(outdir, 'cli-bun.js')
 const cliNode = join(outdir, 'cli-node.js')

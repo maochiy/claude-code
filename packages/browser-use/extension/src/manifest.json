@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "CCX",
+  "version": "1.0.5",
+  "description": "Session-scoped background browser automation bridge for Claude Code Best",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5VbHAnLfNxMHTh8W4elwUbnT1ox22tiqWvIgldrlWlhov1tVR/1qBJW0fGw6dqtNYZsU8m1iT7/NwZg8tA10ehTo6DRuRYnK1vJAsFVKplgy2s8Tvr/tHFxdKDWEyY0OHqbdMX2NkJJyD0mYqgfTcVq4/J9OwR4UFGLUhLXyE2MJe6urq7Qb4XndLyw7HhaK9bmtQuJJyflVo9iQwlgLAJB6jq/LsvH/JpBBzsCGZWzlgk6x5OZEZCF6z1wvA6iz/V0dWvGKFeDOHd04Tm84DVtdWN2vxsaCuzEGkhbPFIOy9PfGBtSbj275I8VRuxZfExT8Iy1s97AMNEKt4AFa5QIDAQAB",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "storage",
+    "sidePanel",
+    "nativeMessaging",
+    "debugger",
+    "alarms",
+    "activeTab"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "action": { "default_title": "CCX" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "minimum_chrome_version": "116"
+}

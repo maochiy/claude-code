@@ -118,6 +118,11 @@ async function main(): Promise<void> {
     const { runComputerUseMcpServer } = await import('../utils/computerUse/mcpServer.js');
     await runComputerUseMcpServer();
     return;
+  } else if (feature('BROWSER_USE') && process.argv[2] === '--browser-native-host') {
+    profileCheckpoint('cli_browser_native_host_path');
+    const { runBrowserNativeHost } = await import('@claude-code-best/browser-use');
+    await runBrowserNativeHost();
+    return;
   }
 
   // Fast-path for `--acp` — ACP (Agent Client Protocol) agent mode over stdio.

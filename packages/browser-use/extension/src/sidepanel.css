@@ -1,0 +1,158 @@
+:root {
+  color-scheme: light dark;
+}
+body {
+  font:
+    13px / 1.5 system-ui,
+    -apple-system,
+    "PingFang SC",
+    sans-serif;
+  margin: 0;
+  color: #1f2328;
+  background: #fff;
+}
+main {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+h1 {
+  font-size: 15px;
+  margin: 0 0 4px;
+}
+h2 {
+  font-size: 13px;
+  margin: 0;
+}
+.muted {
+  color: #6b7280;
+  font-size: 12px;
+  margin: 0;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.session-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.badge {
+  font-size: 11px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+.tabs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tab {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+  color: #374151;
+}
+.tab .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab .flags {
+  color: #9ca3af;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+}
+button {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  cursor: pointer;
+}
+button:hover {
+  background: #eef1f4;
+}
+button.danger {
+  color: #b42318;
+  border-color: #f3c2bd;
+  background: #fff5f4;
+}
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: #57606a;
+}
+footer {
+  border-top: 1px solid #e5e7eb;
+  padding-top: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #e6edf3;
+    background: #0d1117;
+  }
+  .session {
+    border-color: #30363d;
+  }
+  .badge {
+    color: #a5c8ff;
+    background: #132445;
+  }
+  .tab {
+    color: #c9d1d9;
+  }
+  button {
+    color: #e6edf3;
+    border-color: #30363d;
+    background: #21262d;
+  }
+  button:hover {
+    background: #262c34;
+  }
+  button.danger {
+    color: #ff9c92;
+    border-color: #5c2620;
+    background: #2a1512;
+  }
+  footer {
+    border-color: #30363d;
+  }
+}

@@ -29,7 +29,9 @@
       ],
       "@claude-code-best/workflow-engine": [
         "./packages/workflow-engine/src/index.ts"
-      ]
+      ],
+      "@claude-code-best/browser-use/*": ["./packages/browser-use/src/*"],
+      "@claude-code-best/browser-use": ["./packages/browser-use/src/index.ts"]
     }
   },
   "include": [
