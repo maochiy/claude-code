@@ -11,6 +11,7 @@ import {
 } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
+  getAdditionalSkillDirectories,
   getSessionId,
 } from '../bootstrap/state.js'
 import {
@@ -647,6 +648,7 @@ export const getSkillDirCommands = memoize(
 
     // Load from additional directories (--add-dir)
     const additionalDirs = getAdditionalDirectoriesForClaudeMd()
+    const additionalSkillDirs = getAdditionalSkillDirectories()
     const skillsLocked = isRestrictedToPluginOnly('skills')
     const projectSettingsEnabled =
       isSettingSourceEnabled('projectSettings') && !skillsLocked
@@ -656,20 +658,26 @@ export const getSkillDirCommands = memoize(
     // register separately. skillsLocked still applies — --bare is not a
     // policy bypass.
     if (isBareMode()) {
-      if (additionalDirs.length === 0 || !projectSettingsEnabled) {
+      if (
+        (additionalDirs.length === 0 && additionalSkillDirs.length === 0) ||
+        !projectSettingsEnabled
+      ) {
         logForDebugging(
-          `[bare] Skipping skill dir discovery (${additionalDirs.length === 0 ? 'no --add-dir' : 'projectSettings disabled or skillsLocked'})`,
+          `[bare] Skipping skill dir discovery (${additionalDirs.length === 0 && additionalSkillDirs.length === 0 ? 'no explicit skill directories' : 'projectSettings disabled or skillsLocked'})`,
         )
         return []
       }
-      const additionalSkillsNested = await Promise.all(
-        additionalDirs.map(dir =>
+      const additionalSkillsNested = await Promise.all([
+        ...additionalDirs.map(dir =>
           loadSkillsFromSkillsDir(
             join(dir, '.claude', 'skills'),
             'projectSettings',
           ),
         ),
-      )
+        ...additionalSkillDirs.map(dir =>
+          loadSkillsFromSkillsDir(dir, 'projectSettings'),
+        ),
+      ])
       // No dedup needed — explicit dirs, user controls uniqueness.
       return additionalSkillsNested.flat().map(s => s.skill)
     }
@@ -681,6 +689,7 @@ export const getSkillDirCommands = memoize(
       userSkills,
       projectSkillsNested,
       additionalSkillsNested,
+      hostSkillsNested,
       legacyCommands,
     ] = await Promise.all([
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS)
@@ -706,6 +715,13 @@ export const getSkillDirCommands = memoize(
             ),
           )
         : Promise.resolve([]),
+      projectSettingsEnabled
+        ? Promise.all(
+            additionalSkillDirs.map(dir =>
+              loadSkillsFromSkillsDir(dir, 'projectSettings'),
+            ),
+          )
+        : Promise.resolve([]),
       // Legacy commands-as-skills goes through markdownConfigLoader with
       // subdir='commands', which our agents-only guard there skips. Block
       // here when skills are locked — these ARE skills, regardless of the
@@ -719,6 +735,7 @@ export const getSkillDirCommands = memoize(
       ...userSkills,
       ...projectSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
+      ...hostSkillsNested.flat(),
       ...legacyCommands,
     ]
 
@@ -796,7 +813,7 @@ export const getSkillDirCommands = memoize(
     }
 
     logForDebugging(
-      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
+      `Loaded ${deduplicatedSkills.length} unique skills (${unconditionalSkills.length} unconditional, ${newConditionalSkills.length} conditional, managed: ${managedSkills.length}, user: ${userSkills.length}, project: ${projectSkillsNested.flat().length}, additional: ${additionalSkillsNested.flat().length}, host: ${hostSkillsNested.flat().length}, legacy commands: ${legacyCommands.length})`,
     )
 
     return unconditionalSkills
