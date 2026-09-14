@@ -5,6 +5,28 @@ import type { ConfiguredModel, SettingsJson } from '../settings/types.js'
 export type ConfigurableProvider = 'anthropic' | 'openai' | 'gemini' | 'grok'
 
 const LEGACY_FAMILIES = ['haiku', 'sonnet', 'opus'] as const
+let configuredModelCatalogOverride:
+  | {
+      provider: ConfigurableProvider
+      models: ConfiguredModel[]
+    }
+  | undefined
+
+/**
+ * Desktop Runtime 显式选择 Proma Provider 时，模型目录必须覆盖用户/项目
+ * settings 中的原生目录。该状态仅存在于单 Session Worker 进程内，不影响 CLI。
+ */
+export function setConfiguredModelCatalogOverride(
+  provider: ConfigurableProvider,
+  models: ConfiguredModel[] | undefined,
+): void {
+  configuredModelCatalogOverride = models
+    ? {
+        provider,
+        models: normalizeConfiguredModels(models),
+      }
+    : undefined
+}
 
 function getLegacyPrefix(provider: ConfigurableProvider): string {
   switch (provider) {
@@ -118,6 +140,9 @@ export function getInitialConfiguredModels(
   provider: ConfigurableProvider,
   settings: SettingsJson = getSettings_DEPRECATED() || {},
 ): ConfiguredModel[] {
+  if (configuredModelCatalogOverride?.provider === provider) {
+    return configuredModelCatalogOverride.models
+  }
   if (settings.modelType === provider && settings.models?.length) {
     return normalizeConfiguredModels(settings.models)
   }
@@ -127,6 +152,9 @@ export function getInitialConfiguredModels(
 export function getConfiguredModels(
   settings: SettingsJson = getSettings_DEPRECATED() || {},
 ): ConfiguredModel[] {
+  if (configuredModelCatalogOverride) {
+    return configuredModelCatalogOverride.models
+  }
   return normalizeConfiguredModels(settings.models ?? [])
 }
 
@@ -141,6 +169,9 @@ export function getConfiguredModel(
 export function hasConfiguredModelCatalog(
   settings: SettingsJson = getSettings_DEPRECATED() || {},
 ): boolean {
+  if (configuredModelCatalogOverride) {
+    return configuredModelCatalogOverride.models.length > 0
+  }
   return settings.models !== undefined && settings.models.length > 0
 }
 
