@@ -121,6 +121,114 @@ describe('anthropicMessagesToOpenAI', () => {
     ])
   })
 
+  test('Given tool_result contains text and image, when converting, then image is forwarded after the tool message', () => {
+    const result = anthropicMessagesToOpenAI(
+      [
+        makeAssistantMsg([
+          {
+            type: 'tool_use' as const,
+            id: 'toolu_image',
+            name: 'Read',
+            input: { file_path: '/tmp/image.png' },
+          },
+        ]),
+        makeUserMsg([
+          {
+            type: 'tool_result' as const,
+            tool_use_id: 'toolu_image',
+            content: [
+              { type: 'text' as const, text: 'Image dimensions: 2000x1039.' },
+              {
+                type: 'image' as const,
+                source: {
+                  type: 'base64',
+                  media_type: 'image/png',
+                  data: 'iVBORw0KGgo=',
+                },
+              },
+            ],
+          },
+        ]),
+      ],
+      [] as any,
+    )
+
+    expect(result).toEqual([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'toolu_image',
+            type: 'function',
+            function: {
+              name: 'Read',
+              arguments: '{"file_path":"/tmp/image.png"}',
+            },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'toolu_image',
+        content: 'Image dimensions: 2000x1039.',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: {
+              url: 'data:image/png;base64,iVBORw0KGgo=',
+            },
+          },
+        ],
+      },
+    ])
+  })
+
+  test('Given image-only tool_result, when converting, then image is not silently dropped', () => {
+    const result = anthropicMessagesToOpenAI(
+      [
+        makeUserMsg([
+          {
+            type: 'tool_result' as const,
+            tool_use_id: 'toolu_image_only',
+            content: [
+              {
+                type: 'image' as const,
+                source: {
+                  type: 'url',
+                  url: 'https://example.com/tool-result.png',
+                },
+              },
+            ],
+          },
+        ]),
+      ],
+      [] as any,
+    )
+
+    expect(result).toEqual([
+      {
+        role: 'tool',
+        tool_call_id: 'toolu_image_only',
+        content: '',
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            image_url: {
+              url: 'https://example.com/tool-result.png',
+            },
+          },
+        ],
+      },
+    ])
+  })
+
   test('preserves thinking blocks as reasoning_content', () => {
     const result = anthropicMessagesToOpenAI(
       [
