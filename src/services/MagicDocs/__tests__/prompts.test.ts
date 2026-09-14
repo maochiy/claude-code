@@ -1,6 +1,22 @@
 import { afterAll, describe, test, expect, mock, beforeEach } from 'bun:test'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js'
+// Capture the REAL modules before mock.module replaces the registry. bun
+// retroactively patches live bindings of already-imported modules when a mock
+// registers, so snapshot the exports into plain objects immediately — these
+// copies keep pointing at the real implementations. mock.module is
+// process-global, so later test files in the same bun process
+// (configuredModels.test.ts, model.test.ts, …) must see real behavior.
+import * as realEffortModule from 'src/utils/effort.js'
+import * as realModelModule from 'src/utils/model/model.js'
+
+const realModelSnapshot: Record<string, unknown> = {
+  ...(realModelModule as unknown as Record<string, unknown>),
+}
+const realEffortSnapshot: Record<string, unknown> = {
+  ...(realEffortModule as unknown as Record<string, unknown>),
+}
 
 // ── Mock infrastructure ─────────────────────────────────────────────────────
 // All mock.module calls must precede the import of the module under test.
@@ -80,7 +96,7 @@ function realFirstPartyNameToCanonical(name: string): string {
   return name
 }
 
-mock.module('src/utils/model/model.js', () => ({
+const magicDocsModelMocks: Record<string, unknown> = {
   getMainLoopModel: mockGetMainLoopModel,
   getSmallFastModel: mock(() => 'claude-haiku'),
   getUserSpecifiedModelSetting: mock(() => undefined),
@@ -119,9 +135,17 @@ mock.module('src/utils/model/model.js', () => ({
   getMarketingNameForModel: mock(() => undefined),
   normalizeModelStringForAPI: mock((m: string) => m),
   isNonCustomOpusModel: mock(() => false),
-}))
+}
 
-mock.module('src/utils/effort.js', () => ({
+mock.module('src/utils/model/model.js', () =>
+  flagAwareModule(
+    magicDocsModelMocks,
+    realModelSnapshot,
+    () => useMockForMagicDocs,
+  ),
+)
+
+const magicDocsEffortMocks: Record<string, unknown> = {
   getDisplayedEffortLevel: mockGetDisplayedEffortLevel as (
     _m: string,
     _e: unknown,
@@ -148,7 +172,15 @@ mock.module('src/utils/effort.js', () => ({
   resolvePickerEffortPersistence: mock(() => undefined),
   isValidNumericEffort: mock(() => false),
   EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
-}))
+}
+
+mock.module('src/utils/effort.js', () =>
+  flagAwareModule(
+    magicDocsEffortMocks,
+    realEffortSnapshot,
+    () => useMockForMagicDocs,
+  ),
+)
 
 // Use REAL semantics for non-overridden envUtils exports — this mock is
 // process-global, so envUtils.test.ts and other consumers running in the

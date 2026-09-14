@@ -6,14 +6,27 @@
  * getInitialSettings() and updateSettingsForSource().
  */
 import { afterAll, describe, expect, test, beforeEach, mock } from 'bun:test'
-import * as settingsModule from '../../../utils/settings/settings.js'
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js'
+// Snapshot the REAL settings module before mock.module registers (bun
+// retroactively patches live bindings of already-imported modules, so a bare
+// `import * as settingsModule` reflects later mocks). After this file's
+// afterAll, later test files in the same process (configuredModels.test.ts, …)
+// must see the real settings implementation — restoring from the snapshot
+// keeps them working. Restoring from the namespace object itself would re-
+// register this file's mock (the live bindings are retroactively patched).
+import * as realSettingsModule from '../../../utils/settings/settings.js'
+
+const realSettingsSnapshot: Record<string, unknown> = {
+  ...(realSettingsModule as unknown as Record<string, unknown>),
+}
 
 // ── Mocks must be declared before the module under test is imported ──────────
 
+let useMockForPoorMode = true
 let mockSettings: Record<string, unknown> = {}
 let lastUpdate: { source: string; patch: Record<string, unknown> } | null = null
 
-mock.module('src/utils/settings/settings.js', () => ({
+const poorModeSettingsMockSurface: Record<string, unknown> = {
   loadManagedFileSettings: () => ({ settings: null, errors: [] }),
   getManagedFileSettingsPresence: () => ({
     hasBase: false,
@@ -42,11 +55,27 @@ mock.module('src/utils/settings/settings.js', () => ({
     lastUpdate = { source, patch }
     mockSettings = { ...mockSettings, ...patch }
   },
-}))
+}
+
+// flagAwareModule serves each export as a call-time-branching wrapper: while
+// useMockForPoorMode is true the mock surface wins, afterwards the real
+// snapshot's implementations are served (fills every real export name this
+// mock-surface doesn't declare — a bare mock would SyntaxError later files
+// that import the missing names).
+mock.module('src/utils/settings/settings.js', () =>
+  flagAwareModule(
+    poorModeSettingsMockSurface,
+    realSettingsSnapshot,
+    () => useMockForPoorMode,
+  ),
+)
 
 afterAll(() => {
-  mock.restore()
-  mock.module('src/utils/settings/settings.js', () => settingsModule)
+  // Flip the call-time branch instead of re-registering the namespace object:
+  // `mock.restore()` does not unregister bun mocks, and the imported
+  // `settingsModule` live bindings are retroactively patched by this file's
+  // own mock — re-registering it would serve the mock to later files.
+  useMockForPoorMode = false
 })
 
 // Import AFTER mocks are registered. The query suffix gives this file its own

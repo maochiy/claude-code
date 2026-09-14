@@ -119,16 +119,12 @@ export function getContextWindowForModel(
     return chatgptContextWindow
   }
 
-  const cap = getModelCapability(model)
-  if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
-    if (
-      cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
-      is1mContextDisabled()
-    ) {
-      return MODEL_CONTEXT_WINDOW_DEFAULT
-    }
-    return cap.max_input_tokens
-  }
+  // NOTE: upstream returns the cached capability's max_input_tokens uncapped
+  // here (trusting advertised capability up to 1M). Our design requires
+  // explicit opt-in ([1m] suffix / 1M beta header) before exceeding the
+  // default window — see contextWindow.test.ts 'does not activate extended
+  // context from advertised capability'. Only capabilities at or below the
+  // default are honored (getEffectiveCapabilityContextWindow below).
 
   if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
     return 1_000_000

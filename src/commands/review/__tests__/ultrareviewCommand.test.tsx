@@ -22,6 +22,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { debugMock } from '../../../../tests/mocks/debug.js';
 import { logMock } from '../../../../tests/mocks/log.js';
 import { setupAxiosMock } from '../../../../tests/mocks/axios.js';
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js';
 
 // Pre-import the real react and ink modules so we can delegate after this
 // suite. Bun's mock.module is process-global / last-write-wins; without
@@ -32,6 +33,13 @@ const _realReactMod = (await import('react')) as Record<string, unknown> & {
   default?: Record<string, unknown>;
 };
 const _realInkMod = (await import('@anthropic/ink')) as Record<string, unknown>;
+// Snapshot the REAL CustomSelect module for the same reason: this suite's
+// Select: 'Select' string mock replaces the process-global module, and bun
+// validates named imports against the mock surface — later files that render
+// the after_add / model_list phases (ConfiguredProviderSetup.test.tsx) stop
+// rendering when Select is a string. flagAwareModule serves the real export
+// after the afterAll flag flip.
+const _realSelectMod = (await import('src/components/CustomSelect/select.js')) as Record<string, unknown>;
 let _useStubReactForUltrareview = true;
 let _useStubInkForUltrareview = true;
 afterAll(() => {
@@ -163,21 +171,38 @@ mock.module('react', () => {
 // { Box: 'Box', Dialog: 'Dialog', Text: 'Text' } leaks into every later test
 // file (e.g. AgentsPlatformView.test.tsx) that imports @anthropic/ink — those
 // consumers receive strings instead of real components and rendering breaks.
-mock.module('@anthropic/ink', () => {
-  if (_useStubInkForUltrareview) {
-    return {
-      ..._realInkMod,
+// NOTE: bun evaluates mock.module factories EAGERLY at registration, so a
+// bare `if (flag) return stubSurface` inside the factory is frozen with the
+// flag's registration-time value — the afterAll flip has no effect. The stub
+// Text here is the STRING marker 'Text', which breaks later files that render
+// `<Text bold>` (ink reconciler: `Text string "X" must be rendered inside
+// <Text>`). flagAwareModule's per-export wrappers re-check the flag on every
+// call instead.
+mock.module('@anthropic/ink', () =>
+  flagAwareModule(
+    {
       Box: 'Box',
       Dialog: 'Dialog',
       Text: 'Text',
-    };
-  }
-  return _realInkMod;
-});
+    },
+    _realInkMod,
+    () => _useStubInkForUltrareview,
+  ),
+);
 
-mock.module('src/components/CustomSelect/select.js', () => ({
-  Select: 'Select',
-}));
+// Select string marker only wins while this suite's flag is on; afterwards
+// later files resolve the REAL Select (see _realSelectMod snapshot above).
+mock.module('src/components/CustomSelect/select.js', () =>
+  flagAwareModule(
+    {
+      Select: function Select() {
+        return null;
+      },
+    },
+    _realSelectMod,
+    () => _useStubReactForUltrareview,
+  ),
+);
 
 // UltrareviewOverageDialog — return a simple marker
 mock.module('src/commands/review/UltrareviewOverageDialog.js', () => ({

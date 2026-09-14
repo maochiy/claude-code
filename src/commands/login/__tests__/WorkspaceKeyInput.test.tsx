@@ -14,18 +14,45 @@
  * and instead verify the component's behaviour through pure validation logic tests
  * plus a direct JSX snapshot check against a minimal stub render.
  */
-import { describe, expect, test, mock } from 'bun:test';
+import { afterAll, describe, expect, test, mock } from 'bun:test';
 import * as React from 'react';
 import { logMock } from '../../../../tests/mocks/log';
 import { debugMock } from '../../../../tests/mocks/debug';
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js';
+// Snapshot the REAL settings module before mock.module registers (bun
+// retroactively patches live bindings of already-imported modules). This
+// file's partial settings mock replaces the process-global module, and bun
+// validates named imports against the mock surface — mock names that don't
+// exist in the real module (getCachedOrDefaultSettings) plus missing real
+// names (getInitialSettings) break LATER sibling files in the same process
+// (ConfiguredProviderSetup.test.tsx imports getInitialSettings via
+// AppStateProvider). flagAwareModule serves every real export name so
+// sibling files validate; the flag lets this file's own mock win while its
+// tests run.
+import * as realSettingsModule from '../../../utils/settings/settings.js';
+
+const realSettingsSnapshot: Record<string, unknown> = {
+  ...(realSettingsModule as unknown as Record<string, unknown>),
+};
+
+let useMockForWorkspaceKeyInput = true;
+afterAll(() => {
+  useMockForWorkspaceKeyInput = false;
+});
 
 mock.module('src/utils/log.ts', logMock);
 mock.module('src/utils/debug.ts', debugMock);
 mock.module('bun:bundle', () => ({ feature: () => false }));
-mock.module('src/utils/settings/settings.js', () => ({
-  getCachedOrDefaultSettings: () => ({}),
-  getSettings: () => ({}),
-}));
+mock.module('src/utils/settings/settings.js', () =>
+  flagAwareModule(
+    {
+      getCachedOrDefaultSettings: () => ({}),
+      getSettings: () => ({}),
+    },
+    realSettingsSnapshot,
+    () => useMockForWorkspaceKeyInput,
+  ),
+);
 mock.module('src/utils/config.ts', () => ({
   isConfigEnabled: () => true,
   getGlobalConfig: () => ({ workspaceApiKey: undefined }),

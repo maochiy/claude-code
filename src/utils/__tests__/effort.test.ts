@@ -1,12 +1,54 @@
-import { describe, expect, test, beforeEach, afterEach, mock } from 'bun:test'
+import {
+  afterAll,
+  describe,
+  expect,
+  test,
+  beforeEach,
+  afterEach,
+  mock,
+} from 'bun:test'
+import { flagAwareModule } from '../../../tests/mocks/flagAwareModule.js'
+// Snapshot the REAL settings module before mock.module registers — bun
+// retroactively patches live bindings, so copy the exports into a plain
+// object immediately. After this suite's flag flips off, later test files
+// (configuredModels.test.ts, …) must see the real settings implementation.
+import * as realSettingsModule from 'src/utils/settings/settings.js'
 
-// Mock heavy dependencies to avoid import chain issues
-mock.module('src/utils/thinking.js', () => ({
-  isUltrathinkEnabled: () => false,
-}))
-mock.module('src/utils/settings/settings.js', () => ({
-  getInitialSettings: () => ({}),
-}))
+const realSettingsSnapshot: Record<string, unknown> = {
+  ...(realSettingsModule as unknown as Record<string, unknown>),
+}
+
+// Snapshot the REAL thinking module for the same reason: the spread executes
+// before mock.module registers, so the copy keeps pointing at real exports.
+import * as realThinkingModule from 'src/utils/thinking.js'
+
+const realThinkingSnapshot: Record<string, unknown> = {
+  ...(realThinkingModule as unknown as Record<string, unknown>),
+}
+
+let useMockForEffort = true
+afterAll(() => {
+  useMockForEffort = false
+})
+
+// Mock heavy dependencies to avoid import chain issues — surface completed
+// from the real snapshot so sibling files' named imports still validate
+// (mock.module is process-global; a mock missing real export names like
+// findThinkingTriggerPositions breaks LATER test files in the same process).
+mock.module('src/utils/thinking.js', () =>
+  flagAwareModule(
+    { isUltrathinkEnabled: () => false },
+    realThinkingSnapshot,
+    () => useMockForEffort,
+  ),
+)
+mock.module('src/utils/settings/settings.js', () =>
+  flagAwareModule(
+    { getInitialSettings: () => ({}) },
+    realSettingsSnapshot,
+    () => useMockForEffort,
+  ),
+)
 mock.module('src/utils/auth.js', () => ({
   isProSubscriber: () => false,
   isMaxSubscriber: () => false,

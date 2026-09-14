@@ -1,4 +1,32 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js'
+// Snapshot the REAL settings module before mock.module registers (bun
+// retroactively patches live bindings of already-imported modules). This
+// file's partial mock replaces the process-global settings module, and bun
+// validates named imports against the mock surface — a mock missing real
+// export names (getInitialSettings, …) makes LATER test files in the same
+// process fail validation (ConfiguredProviderSetup.test.tsx imports
+// AppStateProvider → getInitialSettings). flagAwareModule serves every real
+// export name so sibling files validate, and the flag lets this file's own
+// mock win while its tests run.
+import * as realSettingsModule from '../../../utils/settings/settings.js'
+
+const realSettingsSnapshot: Record<string, unknown> = {
+  ...(realSettingsModule as unknown as Record<string, unknown>),
+}
+
+let useMockForRecap = true
+afterAll(() => {
+  useMockForRecap = false
+})
 
 // Mock bun:bundle before any imports that use feature()
 // Note: in the test environment AWAY_SUMMARY compile-time flag is false, so
@@ -19,12 +47,20 @@ mock.module('src/utils/debug.ts', () => ({
   isDebug: () => false,
 }))
 
-// Mock settings to avoid filesystem side effects
-mock.module('src/utils/settings/settings.js', () => ({
-  getCachedSettings: () => ({}),
-  getSettings: async () => ({}),
-  updateSettings: async () => {},
-}))
+// Mock settings to avoid filesystem side effects — surface completed from the
+// real snapshot so sibling files' named imports still validate after bun
+// replaces the process-global module with this mock.
+mock.module('src/utils/settings/settings.js', () =>
+  flagAwareModule(
+    {
+      getCachedSettings: () => ({}),
+      getSettings: async () => ({}),
+      updateSettings: async () => {},
+    },
+    realSettingsSnapshot,
+    () => useMockForRecap,
+  ),
+)
 
 // Mock analytics (GrowthBook) — required for isEnabled()
 let gbValue = true

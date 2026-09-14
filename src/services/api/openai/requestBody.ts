@@ -19,10 +19,7 @@ export function normalizeOpenAIChatReasoningEffort(
   if (effortValue === 'low') return 'low'
   if (effortValue === 'medium') return 'medium'
   if (effortValue === 'xhigh' || effortValue === 'max') return 'xhigh'
-  if (
-    effortValue === 'high'
-    || typeof effortValue === 'number'
-  ) {
+  if (effortValue === 'high' || typeof effortValue === 'number') {
     return 'high'
   }
   return undefined

@@ -1,8 +1,31 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import {
+  afterAll,
+  describe,
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  mock,
+} from 'bun:test'
 import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { logMock } from '../../../../tests/mocks/log.js'
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js'
+// Snapshot the REAL settings module before mock.module registers (bun
+// retroactively patches live bindings). After this suite's flag flips off,
+// later test files (configuredModels.test.ts, …) must see the real settings
+// implementation instead of an empty object.
+import * as realSettingsModule from 'src/utils/settings/settings.js'
+
+const realSettingsSnapshot: Record<string, unknown> = {
+  ...(realSettingsModule as unknown as Record<string, unknown>),
+}
+
+let useMockForLoader = true
+afterAll(() => {
+  useMockForLoader = false
+})
 
 // Must mock log before any import that transitively loads log.ts
 mock.module('src/utils/log.ts', logMock)
@@ -11,10 +34,16 @@ mock.module('src/utils/log.ts', logMock)
 mock.module('bun:bundle', () => ({ feature: () => false }))
 
 // settings.js must be mocked to cut bootstrap chain
-mock.module('src/utils/settings/settings.js', () => ({
-  getSettings_DEPRECATED: () => ({}),
-  updateSettingsForSource: () => {},
-}))
+mock.module('src/utils/settings/settings.js', () =>
+  flagAwareModule(
+    {
+      getSettings_DEPRECATED: () => ({}),
+      updateSettingsForSource: () => {},
+    },
+    realSettingsSnapshot,
+    () => useMockForLoader,
+  ),
+)
 
 let tmpDir: string
 

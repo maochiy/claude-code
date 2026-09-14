@@ -2,11 +2,19 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'b
 import * as React from 'react';
 import { logMock } from '../../../../tests/mocks/log';
 import { debugMock } from '../../../../tests/mocks/debug';
+import { flagAwareModule } from '../../../../tests/mocks/flagAwareModule.js';
 
 // Pre-import real ink so we can fall through after this suite. Bun's
 // mock.module is process-global / last-write-wins; without delegation the
 // stub Box/Pane/Text/useTheme leak into other test files (e.g.
 // AgentsPlatformView.test.tsx) that need real ink components.
+// NOTE: bun evaluates mock.module factories EAGERLY at registration, so a
+// bare `if (flag) return stubSurface` inside the factory is frozen with the
+// flag's registration-time value — the afterAll flip has no effect. The stub
+// Text renders `createElement('text')` which breaks ink's reconciler
+// isInsideText tracking in later files (ConfiguredProviderSetup.test.tsx:
+// `Text string "X" must be rendered inside <Text>`). flagAwareModule's
+// per-export wrappers re-check the flag on every call instead.
 const _realOnboardingInkMod = (await import('@anthropic/ink')) as Record<string, unknown>;
 let _useStubInkForOnboarding = true;
 afterAll(() => {
@@ -49,18 +57,18 @@ mock.module('src/utils/config.js', () => ({
 // Stub heavy theme + ink imports — the launcher only references them for
 // the `theme` subcommand JSX render path. Spread real ink so when the flag
 // flips off in afterAll, later test files see real components.
-mock.module('@anthropic/ink', () => {
-  if (_useStubInkForOnboarding) {
-    return {
-      ..._realOnboardingInkMod,
+mock.module('@anthropic/ink', () =>
+  flagAwareModule(
+    {
       Box: ({ children }: { children?: React.ReactNode }) => React.createElement('box', null, children),
       Pane: ({ children }: { children?: React.ReactNode }) => React.createElement('pane', null, children),
       Text: ({ children }: { children?: React.ReactNode }) => React.createElement('text', null, children),
       useTheme: () => ['dark', (_t: string) => undefined],
-    };
-  }
-  return _realOnboardingInkMod;
-});
+    },
+    _realOnboardingInkMod,
+    () => _useStubInkForOnboarding,
+  ),
+);
 
 mock.module('src/components/ThemePicker.js', () => ({
   ThemePicker: () => React.createElement('theme-picker'),
