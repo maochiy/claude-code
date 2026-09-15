@@ -522,6 +522,74 @@ describe('thinking support (reasoning_content)', () => {
     expect(blockStarts[0].index).toBe(0)
     expect(blockStarts[1].index).toBe(1)
   })
+
+  test('closes an open text block when reasoning resumes (interleaved stream)', async () => {
+    // Some gateways interleave a second reasoning phase AFTER text has already
+    // started streaming. The adapter must close the text block before opening
+    // the new thinking block — otherwise textBlockOpen stays true while
+    // currentContentIndex advances, and the next text_delta is emitted at the
+    // thinking block's index, crossing the two blocks' contents.
+    const events = await collectEvents([
+      makeChunk({
+        choices: [
+          { index: 0, delta: { content: 'Part A ' }, finish_reason: null },
+        ],
+      }),
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: 'inner thought' },
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [
+          { index: 0, delta: { content: 'Part B' }, finish_reason: null },
+        ],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }),
+    ])
+
+    const blockStarts = events.filter(
+      e => e.type === 'content_block_start',
+    ) as any[]
+    expect(blockStarts.length).toBe(3)
+    expect(blockStarts[0].content_block.type).toBe('text')
+    expect(blockStarts[0].index).toBe(0)
+    expect(blockStarts[1].content_block.type).toBe('thinking')
+    expect(blockStarts[1].index).toBe(1)
+    expect(blockStarts[2].content_block.type).toBe('text')
+    expect(blockStarts[2].index).toBe(2)
+
+    // The first text block is closed before the thinking block starts.
+    const blockStops = events.filter(
+      e => e.type === 'content_block_stop',
+    ) as any[]
+    expect(blockStops[0].index).toBe(0)
+
+    // Each text_delta must carry its own block's index. With the crossed-index
+    // bug the trailing text was emitted at index 1 (inside the thinking block).
+    const textDeltas = events.filter(
+      e => e.type === 'content_block_delta' && e.delta.type === 'text_delta',
+    ) as any[]
+    expect(textDeltas.length).toBe(2)
+    expect(textDeltas[0].index).toBe(0)
+    expect(textDeltas[0].delta.text).toBe('Part A ')
+    expect(textDeltas[1].index).toBe(2)
+    expect(textDeltas[1].delta.text).toBe('Part B')
+
+    const thinkingDeltas = events.filter(
+      e =>
+        e.type === 'content_block_delta' && e.delta.type === 'thinking_delta',
+    ) as any[]
+    expect(thinkingDeltas.length).toBe(1)
+    expect(thinkingDeltas[0].index).toBe(1)
+    expect(thinkingDeltas[0].delta.thinking).toBe('inner thought')
+  })
 })
 
 describe('prompt caching support', () => {

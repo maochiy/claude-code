@@ -19,6 +19,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { sanitizePath } from '../../utils/path.js'
+import { summarizeTranscript } from './transcript.js'
 
 import * as childProcess from 'node:child_process'
 import { promisify } from 'node:util'
@@ -152,55 +153,7 @@ function getTranscriptSummary(maxTurns = 5): string {
       .split('\n')
       .filter(Boolean)
 
-    const summaryParts: string[] = []
-    const errors: string[] = []
-
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as Record<string, unknown>
-        const role = entry.role as string | undefined
-
-        // Collect errors from tool_result blocks
-        if (Array.isArray(entry.content)) {
-          for (const block of entry.content as Array<Record<string, unknown>>) {
-            if (
-              block.type === 'tool_result' &&
-              block.is_error === true &&
-              typeof block.content === 'string'
-            ) {
-              errors.push(block.content.slice(0, 200))
-            }
-          }
-        }
-
-        if (role === 'user' || role === 'assistant') {
-          const content = entry.content
-          let text = ''
-          if (typeof content === 'string') {
-            text = content.slice(0, 200)
-          } else if (Array.isArray(content)) {
-            const firstText = (content as Array<Record<string, unknown>>).find(
-              b => b.type === 'text',
-            )
-            text = (firstText?.text as string | undefined)?.slice(0, 200) ?? ''
-          }
-          if (text) summaryParts.push(`[${role}] ${text}`)
-        }
-      } catch {
-        // skip malformed lines
-      }
-    }
-
-    const recentParts = summaryParts.slice(-maxTurns * 2) // user + assistant per turn
-    let result =
-      recentParts.length > 0
-        ? recentParts.join('\n')
-        : '(no conversation content in log)'
-
-    if (errors.length > 0) {
-      result += '\n\n### Recent errors\n' + errors.slice(-3).join('\n')
-    }
-    return result
+    return summarizeTranscript(lines, maxTurns)
   } catch {
     return '(could not read session log)'
   }

@@ -213,7 +213,11 @@ function getSimpleDoingTasksSection(): string {
 
   const userHelpSubitems = [
     `/help: Get help with using Claude Code`,
-    `To give feedback, users should ${MACRO.ISSUES_EXPLAINER}`,
+    // ISSUES_EXPLAINER is empty in this build; the bullet would otherwise
+    // render as a dangling "To give feedback, users should ".
+    ...(MACRO.ISSUES_EXPLAINER
+      ? [`To give feedback, users should ${MACRO.ISSUES_EXPLAINER}`]
+      : []),
   ]
 
   const items = [
@@ -233,8 +237,7 @@ function getSimpleDoingTasksSection(): string {
     `Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim "all tests pass" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Equally, when a check did pass or a task is complete, state it plainly — do not hedge confirmed results with unnecessary disclaimers, downgrade finished work to "partial," or re-verify things you already checked. The goal is an accurate report, not a defensive one.`,
     `Take accountability for mistakes without collapsing into over-apology, self-abasement, or surrender. If the user pushes back repeatedly or becomes harsh, stay steady and honest rather than becoming increasingly agreeable to appease them. Acknowledge what went wrong, stay focused on solving the problem, and maintain self-respect — don't abandon a correct position just because the user is frustrated.`,
     `Don't proactively mention your knowledge cutoff date or a lack of real-time data unless the user's message makes it directly relevant. Cutoff information is already in the environment section — you don't need to repeat it in responses.`,
-    // TODO: Customize for our fork — replace /share + Slack channel with our own feedback channel
-    `If the user reports a bug, slowness, or unexpected behavior with Claude Code itself (as opposed to asking you to fix their own code), recommend the appropriate slash command: /issue for model-related problems (odd outputs, wrong tool choices, hallucinations, refusals), or /share to upload the full session transcript for product bugs, crashes, slowness, or general issues. Only recommend these when the user is describing a problem with Claude Code. After /share produces a ccshare link, if you have a Slack MCP tool available, offer to post the link to #claude-code-feedback (channel ID C07VBSHV7EV) for the user.`,
+    `If the user reports a bug, slowness, or unexpected behavior with Claude Code itself (as opposed to asking you to fix their own code), recommend the appropriate slash command: /issue for model-related problems (odd outputs, wrong tool choices, hallucinations, refusals), or /share to upload the full session transcript for product bugs, crashes, slowness, or general issues. Only recommend these when the user is describing a problem with Claude Code. After /share produces a ccshare link, the user can attach it to the issue they file with /issue.`,
     `If the user asks for help or wants to give feedback inform them of the following:`,
     userHelpSubitems,
   ]

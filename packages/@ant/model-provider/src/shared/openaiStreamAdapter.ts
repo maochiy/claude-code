@@ -138,6 +138,20 @@ export async function* adaptOpenAIStreamToAnthropic(
     const reasoningContent = (delta as any).reasoning_content
     if (reasoningContent != null) {
       if (!thinkingBlockOpen) {
+        // Close an open text block first. Some gateways emit a second reasoning
+        // phase AFTER text has already started. Without this, textBlockOpen
+        // stays true while currentContentIndex advances to the new thinking
+        // block, so the next text_delta is emitted at the thinking block's
+        // index and the two blocks' contents get crossed.
+        if (textBlockOpen) {
+          yield {
+            type: 'content_block_stop',
+            index: currentContentIndex,
+          } as BetaRawMessageStreamEvent
+          openBlockIndices.delete(currentContentIndex)
+          textBlockOpen = false
+        }
+
         currentContentIndex++
         thinkingBlockOpen = true
         openBlockIndices.add(currentContentIndex)
