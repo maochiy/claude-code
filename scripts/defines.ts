@@ -7,6 +7,16 @@ const pkgPath = resolve(__dirname, '..', 'package.json')
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
 
 /**
+ * Bug-report destination for this fork. FEEDBACK_CHANNEL and ISSUES_EXPLAINER
+ * are interpolated into user-facing sentences (API errors, security warnings,
+ * the system prompt), so both must stay non-empty — an empty value renders as
+ * a dangling "post in ." / "To give feedback, users should ".
+ *
+ * Keep the runtime fallback in src/entrypoints/cli.tsx in sync.
+ */
+const REPO_URL = 'https://github.com/maochiy/claude-code'
+
+/**
  * Shared MACRO define map used by both dev.ts (runtime -d flags)
  * and build.ts (Bun.build define option).
  *
@@ -19,8 +29,10 @@ export function getMacroDefines(): Record<string, string> {
   return {
     'MACRO.VERSION': JSON.stringify(pkg.version),
     'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
-    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(''),
-    'MACRO.ISSUES_EXPLAINER': JSON.stringify(''),
+    'MACRO.FEEDBACK_CHANNEL': JSON.stringify(`${REPO_URL}/issues`),
+    'MACRO.ISSUES_EXPLAINER': JSON.stringify(
+      `report issues at ${REPO_URL}/issues`,
+    ),
     'MACRO.NATIVE_PACKAGE_URL': JSON.stringify(''),
     'MACRO.PACKAGE_URL': JSON.stringify(''),
     'MACRO.VERSION_CHANGELOG': JSON.stringify(''),

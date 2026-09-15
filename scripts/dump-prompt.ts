@@ -158,8 +158,9 @@ mock.module(
 ;(globalThis as any).MACRO = {
   VERSION: '2.1.888',
   BUILD_TIME: '2026-04-22T00:00:00Z',
-  FEEDBACK_CHANNEL: '',
-  ISSUES_EXPLAINER: 'report issues on GitHub',
+  FEEDBACK_CHANNEL: 'https://github.com/maochiy/claude-code/issues',
+  ISSUES_EXPLAINER:
+    'report issues at https://github.com/maochiy/claude-code/issues',
   NATIVE_PACKAGE_URL: '',
   PACKAGE_URL: '',
   VERSION_CHANGELOG: '',

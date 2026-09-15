@@ -12,8 +12,10 @@ if (typeof globalThis.MACRO === 'undefined') {
   (globalThis as any).MACRO = {
     VERSION: process.env.CLAUDE_CODE_VERSION || '2.1.888',
     BUILD_TIME: new Date().toISOString(),
-    FEEDBACK_CHANNEL: '',
-    ISSUES_EXPLAINER: '',
+    // Keep in sync with REPO_URL in scripts/defines.ts — these two macro
+    // values are interpolated into user-facing sentences and must not be empty.
+    FEEDBACK_CHANNEL: 'https://github.com/maochiy/claude-code/issues',
+    ISSUES_EXPLAINER: 'report issues at https://github.com/maochiy/claude-code/issues',
     NATIVE_PACKAGE_URL: '',
     PACKAGE_URL: '',
     VERSION_CHANGELOG: '',

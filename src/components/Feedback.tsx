@@ -41,7 +41,7 @@ const GITHUB_URL_LIMIT = 7250;
 const GITHUB_ISSUES_REPO_URL =
   process.env.USER_TYPE === 'ant'
     ? 'https://github.com/anthropics/claude-cli-internal/issues'
-    : 'https://github.com/anthropics/claude-code/issues';
+    : 'https://github.com/maochiy/claude-code/issues';
 
 type Props = {
   abortSignal: AbortSignal;
