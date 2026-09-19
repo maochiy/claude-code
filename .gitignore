@@ -57,3 +57,6 @@ credentials.json
 .test-progress.md
 .squash-tmp/
 .git.*-backup
+
+# Desktop 保留独立依赖锁文件。
+!/desktop/bun.lock

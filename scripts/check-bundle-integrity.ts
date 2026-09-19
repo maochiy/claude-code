@@ -22,6 +22,9 @@ const pkg = JSON.parse(
   await readFile(join(__dirname, '..', 'package.json'), 'utf-8'),
 )
 const PKG_DEPS = new Set(Object.keys(pkg.dependencies ?? {}))
+for (const name of Object.keys(pkg.optionalDependencies ?? {})) {
+  PKG_DEPS.add(name)
+}
 
 // ─── Node.js 内置模块白名单 ────────────────────────────────────────
 const NODE_BUILTINS = new Set([
@@ -159,6 +162,9 @@ async function main() {
       const requireMatches = line.matchAll(REQUIRE_RE)
       for (const m of requireMatches) {
         const mod = m[1]
+        // Bun emits native addons as relative __require() assets. They are
+        // shipped alongside the chunk and are not external package imports.
+        if (mod.startsWith('./') || mod.startsWith('../')) continue
         // 跳过 ObjC.import（JXA 语法，不是真正的 require）
         if (NATIVE_FRAMEWORKS.has(mod)) continue
         if (

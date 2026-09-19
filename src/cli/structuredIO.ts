@@ -1,3 +1,4 @@
+import { hostToolDenial } from '../utils/permissions/hostToolPolicy.js'
 import { feature } from 'bun:bundle'
 import type {
   ElicitResult,
@@ -568,6 +569,7 @@ export class StructuredIO {
       forceDecision?: PermissionDecision,
     ): Promise<PermissionDecision> => {
       const mainPermissionResult =
+        hostToolDenial(tool) ??
         forceDecision ??
         (await hasPermissionsToUseTool(
           tool,

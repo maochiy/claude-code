@@ -13,7 +13,12 @@ export function getAPIProvider(
   settings: Pick<SettingsJson, 'modelType'> = getInitialSettings(),
 ): APIProvider {
   const modelType = settings.modelType
-  if (modelType === 'openai') return 'openai'
+  if (
+    modelType === 'openai' ||
+    modelType === 'openai-responses' ||
+    modelType === 'openai-responses-oauth'
+  )
+    return 'openai'
   if (modelType === 'gemini') return 'gemini'
   if (modelType === 'grok') return 'grok'
 

@@ -1,0 +1,176 @@
+# electron-builder 配置
+# 文档: https://www.electron.build/configuration/configuration
+
+appId: com.proma.app
+productName: Xcodes
+copyright: Copyright © 2024-2026 Erlich Liu
+
+# Electron 版本（CI 环境 bun workspace 下无法自动检测，需显式指定）
+electronVersion: 39.5.1
+
+# 目录配置
+directories:
+  output: out
+  buildResources: resources
+
+# 压缩配置
+compression: normal
+
+# afterPack / afterSign 复用静态完整性校验，阻止漏带 CLI chunks、资源、Service 或 Bun。
+afterPack: dist/electron-builder-after-pack.cjs
+afterSign: dist/electron-builder-after-sign.cjs
+
+# ASAR 打包配置
+asar: true
+asarUnpack:
+  - "node_modules/@napi-rs/**"
+  - "node_modules/node-pty/**"
+
+# 跳过 npm install（代码已被 esbuild/Vite 打包，npm 不识别 workspace:* 协议）
+npmRebuild: false
+
+# 通用文件配置
+files:
+  - dist/**/*
+  - "!dist/electron-builder-after-pack.cjs"
+  - "!dist/electron-builder-after-sign.cjs"
+  # 排除 build:resources 脚本拷到 dist/resources 的副本（electron-builder 已通过
+  # buildResources 从 resources/ 直接使用 icon/plist，避免产物里重复打包一份）
+  - "!dist/resources/**"
+  - package.json
+  # 主进程依赖默认由 esbuild 打包；保留 node_modules 仅承载 native addon 等资源。
+  - node_modules/**/*
+  # 排除 workspace 包的 symlink（代码已被 esbuild/Vite 打包到 dist/ 中）
+  - "!node_modules/@proma/**"
+  # 排除明确只在开发/构建期使用的大体积包。
+  - "!node_modules/electron/**"
+  - "!node_modules/electron-builder/**"
+  - "!node_modules/electronmon/**"
+  - "!node_modules/esbuild/**"
+  - "!node_modules/@electron/**"
+  - "!node_modules/@electron-builder/**"
+  - "!node_modules/@esbuild/**"
+
+# 通用额外资源
+extraResources:
+  - from: resources/browser
+    to: browser
+    filter:
+      - "browser-preload.cjs"
+  # 自有执行 CLI、会话辅助 CLI 与本地服务，固定置于 ASAR 外。
+  - from: resources/local-runtime
+    to: local-runtime
+    filter:
+      - "**/*"
+  # 默认 Skills 模板（首次启动时同步到 ~/.proma/default-skills/）
+  - from: default-skills
+    to: default-skills
+    filter:
+      - "**/*"
+  # 教程文件（教程查看器 + 欢迎对话使用）
+  - from: ../../tutorial/tutorial-v2.md
+    to: tutorial.md
+  # Proma 品牌 Logo 素材（品牌素材下载功能使用）
+  - from: resources/proma-logos
+    to: proma-logos
+    filter:
+      - "**/*"
+  # 默认窗口图标资源；macOS Dock 直接使用 Bundle 图标，不再支持配色覆盖。
+  - from: resources/icon.png
+    to: icon.png
+  - from: resources/icon.icns
+    to: icon.icns
+  - from: resources/icon.ico
+    to: icon.ico
+
+# ============================================
+# macOS 配置
+# ============================================
+mac:
+  # 安装后的 Bundle 文件名固定为 Xcodes.app；显示名称统一为 Xcodes。
+  executableName: Xcodes
+  artifactName: Xcodes-${version}-mac-${arch}.${ext}
+  category: public.app-category.developer-tools
+  icon: resources/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "Xcodes 需要访问麦克风，用于将你的语音实时转写为文本。"
+  fileAssociations:
+    - ext: proma-backup
+      name: Xcodes Personal Backup
+      role: Editor
+    - ext: proma-share
+      name: Xcodes Share Package
+      role: Editor
+  # 架构由 CLI 参数控制（CI 矩阵分别传 --arm64 / --x64）。
+  target:
+    - dmg
+    - zip
+  extraResources:
+    - from: "vendor/bun/darwin-${arch}"
+      to: "vendor/bun"
+      filter:
+        - "**/*"
+
+# DMG 配置
+dmg:
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+  window:
+    width: 540
+    height: 380
+
+# ============================================
+# Windows 配置
+# ============================================
+win:
+  artifactName: Xcodes-${version}-windows-${arch}.${ext}
+  icon: resources/icon.ico
+  fileAssociations:
+    - ext: proma-backup
+      name: Xcodes Personal Backup
+      icon: resources/icon.ico
+    - ext: proma-share
+      name: Xcodes Share Package
+      icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+  extraResources:
+    - from: "vendor/bun/win32-${arch}"
+      to: "vendor/bun"
+      filter:
+        - "**/*"
+
+linux:
+  extraResources:
+    - from: "vendor/bun/linux-${arch}"
+      to: "vendor/bun"
+      filter:
+        - "**/*"
+
+# NSIS 安装程序配置
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+# ============================================
+# 发布配置
+# 每个平台的 build job 通过 --publish always 直接上传到 GitHub Release。
+# electron-builder 会自动创建/复用 Release，并在多架构并行上传时合并 latest-mac.yml。
+# ============================================
+publish:
+  provider: github
+  owner: maochiy
+  repo: Xcode

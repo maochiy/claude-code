@@ -15,6 +15,10 @@ const envFeatures = Object.keys(process.env)
   .map(k => k.replace('FEATURE_', ''))
 const features = [...new Set([...DEFAULT_BUILD_FEATURES, ...envFeatures])]
 
+// gaxios still imports node-fetch for runtimes without a native Fetch API.
+// Both supported launchers (Bun and modern Node.js) provide fetch globally,
+// so bundle a small adapter instead of leaving two incompatible node-fetch
+// major versions as unresolved production imports.
 // Step 2: Bundle with splitting
 const result = await Bun.build({
   entrypoints: ['src/entrypoints/cli.tsx'],
@@ -22,6 +26,10 @@ const result = await Bun.build({
   target: 'bun',
   splitting: true,
   sourcemap: 'linked',
+  // Keep the native keyring loader external so package installation or the
+  // desktop packager can provide the correct platform addon. Bundling it on
+  // one host permanently compiles all other platform branches into throws.
+  external: ['@napi-rs/keyring'],
   define: {
     ...getMacroDefines(),
     // React production mode — eliminates _debugStack Error objects
@@ -59,6 +67,32 @@ for (const file of files) {
   }
 }
 
+// gaxios v6/v7 retain node-fetch fallbacks even though supported Bun and
+// Node.js runtimes provide the standard Fetch API. Bun cannot bundle the two
+// incompatible transitive node-fetch major versions under code splitting, so
+// replace only their known default-import forms with the native implementation.
+// The bundle integrity check remains authoritative: any new import shape is
+// left untouched and fails the build instead of being silently ignored.
+const NODE_FETCH_REQUIRE = '__importDefault(__require("node-fetch"))'
+const NODE_FETCH_IMPORT = 'import("node-fetch")'
+let nativeFetchPatched = 0
+for (const file of files) {
+  if (!file.endsWith('.js')) continue
+  const filePath = join(outdir, file)
+  const content = await readFile(filePath, 'utf-8')
+  const requireCount = content.split(NODE_FETCH_REQUIRE).length - 1
+  const importCount = content.split(NODE_FETCH_IMPORT).length - 1
+  if (requireCount === 0 && importCount === 0) continue
+  const next = content
+    .replaceAll(NODE_FETCH_REQUIRE, '{ default: globalThis.fetch }')
+    .replaceAll(
+      NODE_FETCH_IMPORT,
+      'Promise.resolve({ default: globalThis.fetch })',
+    )
+  await writeFile(filePath, next)
+  nativeFetchPatched += requireCount + importCount
+}
+
 // Also patch unguarded globalThis.Bun destructuring from third-party deps
 // (e.g. @anthropic-ai/sandbox-runtime) so Node.js doesn't crash at import time.
 let bunPatched = 0
@@ -80,7 +114,7 @@ for (const file of files) {
 BUN_DESTRUCTURE.lastIndex = 0
 
 console.log(
-  `Bundled ${result.outputs.length} files to ${outdir}/ (patched ${patched} for import.meta.require, ${bunPatched} for Bun destructure)`,
+  `Bundled ${result.outputs.length} files to ${outdir}/ (patched ${patched} for import.meta.require, ${nativeFetchPatched} for native fetch, ${bunPatched} for Bun destructure)`,
 )
 
 // Step 4: Copy native .node addon files (audio-capture) and vendored binaries (ripgrep)
@@ -92,18 +126,18 @@ const ripgrepDir = join(outdir, 'vendor', 'ripgrep')
 await cp('src/utils/vendor/ripgrep', ripgrepDir, { recursive: true })
 console.log(`Copied src/utils/vendor/ripgrep/ → ${ripgrepDir}/`)
 
-// Copy browser-use Chrome extension (feature BROWSER_USE) so built artifacts
-// ship with it. The extension has its own build (packages/browser-use/extension);
-// skip silently if it hasn't been built yet.
+// 从源码构建浏览器扩展，干净 checkout 不能依赖之前生成的 dist。
+const extensionBuild = Bun.spawnSync(
+  [process.execPath, 'packages/browser-use/extension/build.mjs'],
+  { stdout: 'inherit', stderr: 'inherit' },
+)
+if (extensionBuild.exitCode !== 0)
+  throw new Error('Browser extension build failed')
 const extensionDir = join(outdir, 'extension')
-try {
-  await cp('packages/browser-use/extension/dist', extensionDir, {
-    recursive: true,
-  })
-  console.log(`Copied packages/browser-use/extension/dist/ → ${extensionDir}/`)
-} catch {
-  console.log('Skipped browser-use extension copy (extension/dist not built)')
-}
+await cp('packages/browser-use/extension/dist', extensionDir, {
+  recursive: true,
+})
+console.log(`Copied packages/browser-use/extension/dist/ → ${extensionDir}/`)
 
 // Step 5: Generate cli-bun and cli-node executable entry points
 const cliBun = join(outdir, 'cli-bun.js')

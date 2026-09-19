@@ -1,0 +1,1841 @@
+/**
+ * SDKMessageRenderer — 渲染 SDKMessage 对象
+ *
+ * 支持两种渲染模式：
+ * 1. 单条消息：SDKMessageRenderer（用于实时流式消息）
+ * 2. Turn 分组：AssistantTurnRenderer（实时与历史共用原序时间线，结束后显示摘要）
+ *
+ * Turn 分组规则：
+ * - 用户消息后到下一条用户消息之间的所有 assistant 消息组成一个 turn
+ * - user(tool_result) 消息属于当前 turn（不中断分组）
+ * - system 消息独立渲染
+ */
+
+import * as React from 'react'
+import { extractPlanDocument, getPlanDocumentStage } from '@/lib/plan-document'
+import { Loader2, AlertTriangle, FileText, FileImage, Download, Split, Undo2, RotateCw, Plus, Minimize2, Wrench, Settings, Cpu, ExternalLink, Quote, Clock } from 'lucide-react'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { cn } from '@/lib/utils'
+import { ImageLightbox, type LightboxImage } from '@/components/ui/image-lightbox'
+import { ContentBlock } from './ContentBlock'
+import { TurnFileChangesSummary, buildTurnFileNameMap } from './TurnFileChangesSummary'
+import { extractToolResultText, TASK_TOOL_NAMES } from './task-progress'
+import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
+import { isParallelToolCallCancellation } from './tool-result-status'
+// 会话转录的纯逻辑(Turn 分组 / 快照去重 / 预览)已下沉到 @proma/session-core 作为唯一真源。
+// 这里 import 供本文件内部使用，并 re-export 以保持既有 `from './SDKMessageRenderer'` 导入方零改动。
+import {
+  groupIntoTurns,
+  getGroupPreview,
+  extractUserText,
+  isUserInputMessage,
+  stripScheduledRunMarker,
+  type MessageGroup,
+  type AssistantTurn,
+} from '@proma/session-core'
+export { groupIntoTurns, getGroupPreview, extractUserText } from '@proma/session-core'
+export type { MessageGroup, AssistantTurn } from '@proma/session-core'
+import { AgentTurnTimeline } from './AgentTurnTimeline'
+import { AgentModelLogo, AgentTurnStatusLine } from './AgentTurnStatusLine'
+import { AgentMessageTime } from './AgentMessageTime'
+import { MessagePinAction } from './MessagePinAction'
+import { BackgroundTasksSummary } from './BackgroundTasksSummary'
+import { HookLifecycleNotice } from './HookLifecycleNotice'
+import { getMessageTimestamp } from '@/lib/message-presentation'
+import {
+  CompactionStatusLine,
+  type CompactionStatusLineStatus,
+} from './CompactionStatusLine'
+import { ProposedPlanCard } from './ProposedPlanCard'
+import {
+  Message,
+  MessageContent,
+  MessageActions,
+  MessageAction,
+  MessageResponse,
+  UserMessageContent,
+  TurnFileMapProvider,
+} from '@/components/ai-elements/message'
+import { CopyButton } from '@/components/chat/CopyButton'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { agentModelSelectorOpenAtom } from '@/atoms/agent-model-control'
+import {
+  agentChildDelegationSessionsAtomFamily,
+  agentRuntimeExecutionGraphAtomFamily,
+  agentSessionPendingFilesAtom,
+  agentSessionsAtom,
+  backgroundTasksAtomFamily,
+} from '@/atoms/agent-atoms'
+import { activeSessionIdAtom } from '@/atoms/tab-atoms'
+import { automationsAtom, automationFormAtom, automationToDraft } from '@/atoms/automation-atoms'
+import { activeViewAtom } from '@/atoms/active-view'
+import { environmentCheckDialogOpenAtom } from '@/atoms/environment'
+import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
+import { useOpenPreview } from '@/components/diff/preview-opener'
+import { getFileParentPath } from '@/lib/file-utils'
+import { parseQuotedSelectionRefs } from '@/lib/quoted-selection'
+import { getAssistantModelMessageId } from '@/lib/agent-live-message'
+import { useTranslation } from '@/lib/i18n'
+import {
+  extractDelegationReferences,
+  extractDelegationTitles,
+} from '@/lib/session-execution-nodes'
+import type { ParsedQuotedSelectionRef } from '@/lib/quoted-selection'
+import type {
+  SDKMessage,
+  SDKAssistantMessage,
+  SDKUserMessage,
+  SDKSystemMessage,
+  SDKContentBlock,
+  SDKToolUseBlock,
+  SDKToolResultBlock,
+  RecoveryAction,
+} from '@proma/shared'
+import type { AgentPendingFile } from '@proma/shared'
+import {
+  getSDKCompactStatus,
+  THINKING_SIGNATURE_ERROR_CODE,
+  THINKING_SIGNATURE_ERROR_TITLE,
+  THINKING_SIGNATURE_ERROR_MESSAGE,
+  isThinkingSignatureError,
+} from '@proma/shared'
+import type { ToolActivity } from '@/atoms/agent-atoms'
+import {
+  isTurnStoppedByUser,
+  orderAssistantMessagesForPresentation,
+} from '@/lib/agent-turn-presentation'
+import { buildCursorTurnPresentation } from '@/lib/agent-cursor-turn'
+
+// ===== SDKMessageRenderer Props =====
+
+export interface SDKMessageRendererProps {
+  /** 要渲染的消息 */
+  message: SDKMessage
+  /** 所有消息（用于 ContentBlock 内查找工具结果） */
+  allMessages: SDKMessage[]
+  /** 相对路径解析基准 */
+  basePath?: string
+  /** 是否显示消息头部（模型 icon + 名称），默认 true */
+  showHeader?: boolean
+  /** 用户在前端选择的模型 ID（优先用于显示名称） */
+  sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
+}
+
+function formatSystemToolName(toolName: string): string {
+  const parts = toolName.split('__')
+  if (parts[0] === 'mcp' && parts.length >= 3) {
+    return `${parts[1]} / ${parts.slice(2).join('__')}`
+  }
+  return toolName
+}
+
+function PermissionDeniedNotice({ message }: { message: SDKSystemMessage }): React.ReactElement {
+  const toolName = typeof message.tool_name === 'string' ? formatSystemToolName(message.tool_name) : undefined
+  const denialMessage = typeof message.message === 'string' ? message.message : undefined
+  const reason = typeof message.decision_reason === 'string' ? message.decision_reason : undefined
+
+  return (
+    <div className="my-3 pl-8 pr-1">
+      <div className="flex items-start gap-2.5 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-xs text-foreground/80">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-foreground">权限检查已拒绝操作</span>
+            {toolName && (
+              <span className="rounded bg-background/60 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                {toolName}
+              </span>
+            )}
+          </div>
+          {denialMessage && (
+            <p className="break-words text-muted-foreground">{denialMessage}</p>
+          )}
+          {reason && reason !== denialMessage && (
+            <p className="break-words text-muted-foreground/70">{reason}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface AutoModeClassifierFields {
+  status: 'checking' | 'allowed' | 'blocked' | 'unavailable' | 'error'
+  toolUseId?: string
+  toolName?: string
+  reason?: string
+  model?: string
+  durationMs?: number
+  usageTokens?: number
+}
+
+function getAutoModeClassifierFields(message: SDKSystemMessage): AutoModeClassifierFields | null {
+  if (message.subtype !== 'auto_mode_classifier') return null
+  const status = message.status
+  if (
+    status !== 'checking'
+    && status !== 'allowed'
+    && status !== 'blocked'
+    && status !== 'unavailable'
+    && status !== 'error'
+  ) return null
+  const durationMs = typeof message.duration_ms === 'number' ? message.duration_ms : undefined
+  const usage = isRecord(message.usage) ? message.usage : undefined
+  const usageTokens = typeof usage?.total_tokens === 'number' ? usage.total_tokens : undefined
+  return {
+    status,
+    toolUseId: typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined,
+    toolName: typeof message.tool_name === 'string' ? formatSystemToolName(message.tool_name) : undefined,
+    reason: typeof message.reason === 'string' ? message.reason : undefined,
+    model: typeof message.model === 'string' ? message.model : undefined,
+    durationMs,
+    usageTokens,
+  }
+}
+
+export function AutoModeClassifierNotice({ message }: { message: SDKSystemMessage }): React.ReactElement | null {
+  const { language } = useTranslation()
+  const fields = getAutoModeClassifierFields(message)
+  if (!fields) return null
+
+  const labels = language === 'zh'
+    ? {
+        checking: 'Auto 模式正在检查',
+        allowed: 'Auto 模式已允许',
+        blocked: 'Auto 模式已拦截',
+        unavailable: 'Auto 模式检查不可用',
+        error: 'Auto 模式检查失败',
+      }
+    : {
+        checking: 'Auto mode is checking',
+        allowed: 'Auto mode allowed',
+        blocked: 'Auto mode blocked',
+        unavailable: 'Auto mode check unavailable',
+        error: 'Auto mode check failed',
+      }
+  const tone = fields.status === 'allowed'
+    ? 'text-emerald-600 dark:text-emerald-400'
+    : fields.status === 'checking'
+      ? 'text-muted-foreground'
+      : 'text-amber-600 dark:text-amber-400'
+  const meta = [
+    fields.model,
+    fields.durationMs != null ? `${Math.max(0, fields.durationMs) / 1000}s` : undefined,
+    fields.usageTokens != null ? `${fields.usageTokens.toLocaleString()} tokens` : undefined,
+  ].filter((value): value is string => Boolean(value))
+
+  return (
+    <div
+      className="my-1.5 flex min-w-0 items-start gap-2 pl-8 text-xs"
+      data-agent-auto-classifier={fields.status}
+      data-tool-use-id={fields.toolUseId}
+    >
+      {fields.status === 'checking'
+        ? <Loader2 className={cn('mt-0.5 size-3.5 shrink-0 animate-spin', tone)} />
+        : <Cpu className={cn('mt-0.5 size-3.5 shrink-0', tone)} />}
+      <div className="min-w-0 space-y-0.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className={cn('font-medium', tone)}>{labels[fields.status]}</span>
+          {fields.toolName && <code className="rounded bg-muted px-1 py-0.5 text-[11px] text-foreground/80">{fields.toolName}</code>}
+          {meta.length > 0 && <span className="text-muted-foreground/70">{meta.join(' · ')}</span>}
+        </div>
+        {fields.reason && <p className="break-words text-muted-foreground">{fields.reason}</p>}
+      </div>
+    </div>
+  )
+}
+
+// ===== system 消息：压缩历史状态 =====
+
+function CompactStatusNotice({
+  message,
+  statusOverride,
+}: {
+  message: SDKSystemMessage
+  statusOverride?: CompactionStatusLineStatus
+}): React.ReactElement | null {
+  const compactStatus = getSDKCompactStatus(message)
+  if (!compactStatus && !statusOverride) return null
+  const metadata = message.compact_metadata
+  const status = statusOverride ?? (
+    compactStatus === 'compacting' ? 'running' : compactStatus
+  )
+  if (!status) return null
+
+  return (
+    <CompactionStatusLine
+      status={status}
+      trigger={message.compactTrigger ?? metadata?.trigger}
+      detail={status === 'failed'
+        ? message.compact_error ?? message.message
+        : undefined}
+      preTokens={message.compactPreTokens ?? metadata?.pre_tokens}
+      postTokens={message.compactionEstimatedTokensAfter ?? metadata?.post_tokens}
+    />
+  )
+}
+
+// extractMeta / MessageMeta 已迁移至 @proma/session-core
+
+// extractUserText 已迁移至 @proma/session-core
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function extractStructuredToolResultText(message: SDKUserMessage): string | undefined {
+  const raw = message as unknown as Record<string, unknown>
+  const result = raw.toolUseResult ?? raw.tool_use_result
+  if (!isRecord(result)) return undefined
+  try {
+    return JSON.stringify(result)
+  } catch {
+    return undefined
+  }
+}
+
+function extractToolResultForTask(message: SDKUserMessage, resultBlock: SDKToolResultBlock): string | undefined {
+  return extractStructuredToolResultText(message) ?? extractToolResultText(resultBlock.content)
+}
+
+function findToolResultText(
+  messages: SDKMessage[],
+  toolUseId: string,
+): string | undefined {
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    const userMessage = message as SDKUserMessage
+    const blocks = userMessage.message?.content
+    if (!Array.isArray(blocks)) continue
+    for (const block of blocks) {
+      if (
+        block.type === 'tool_result'
+        && (block as SDKToolResultBlock).tool_use_id === toolUseId
+      ) {
+        return extractToolResultForTask(
+          userMessage,
+          block as SDKToolResultBlock,
+        )
+      }
+    }
+  }
+  return undefined
+}
+
+const COLLABORATION_DELEGATION_TOOL_NAMES = new Set([
+  'mcp__collaboration__delegate_agent',
+  'mcp__collaboration__delegate_agents',
+])
+
+// isUserInputMessage 已迁移至 @proma/session-core
+
+// AssistantTurn / MessageGroup 类型已迁移至 @proma/session-core
+
+// groupIntoTurns / mergeAdjacentSameModelTurns 已迁移至 @proma/session-core
+
+export function buildTaskProgressData(
+  topLevelBlocks: SDKContentBlock[],
+  turnMessages: SDKMessage[],
+): {
+  taskActivities: ToolActivity[]
+  firstTaskIndex: number
+} {
+  const taskBlocks: SDKToolUseBlock[] = []
+  let firstTaskIndex = -1
+
+  for (let i = 0; i < topLevelBlocks.length; i++) {
+    const block = topLevelBlocks[i]!
+    if (block.type === 'tool_use' && TASK_TOOL_NAMES.has((block as SDKToolUseBlock).name)) {
+      if (firstTaskIndex === -1) firstTaskIndex = i
+      taskBlocks.push(block as SDKToolUseBlock)
+    }
+  }
+
+  const toolResultMap = new Map<string, string>()
+  for (const msg of turnMessages) {
+    if (msg.type !== 'user') continue
+    const userMsg = msg as SDKUserMessage
+    const blocks = userMsg.message?.content
+    if (!Array.isArray(blocks)) continue
+    for (const b of blocks) {
+      if (b.type === 'tool_result') {
+        const rb = b as SDKToolResultBlock
+        const text = extractToolResultForTask(userMsg, rb)
+        if (text) toolResultMap.set(rb.tool_use_id, text)
+      }
+    }
+  }
+
+  const taskActivities: ToolActivity[] = taskBlocks.map((tb) => ({
+    toolUseId: tb.id,
+    toolName: tb.name,
+    input: tb.input as Record<string, unknown>,
+    result: toolResultMap.get(tb.id),
+    done: true,
+  }))
+
+  return { taskActivities, firstTaskIndex }
+}
+
+/**
+ * 提取一个 turn 中直接属于当前 Agent 的任务工具活动。
+ *
+ * Task/Agent 容器内的子 Agent 工具不会进入父会话的浮动进度，避免跨执行单元串扰。
+ */
+export function buildTaskProgressDataForTurn(turn: AssistantTurn): { taskActivities: ToolActivity[] } {
+  const enrichedBlocks: Array<{ block: SDKContentBlock; parentToolUseId?: string | null }> = []
+
+  for (const message of turn.assistantMessages) {
+    const blocks = message.message?.content
+    if (!Array.isArray(blocks)) continue
+    for (const block of blocks) {
+      for (const normalizedBlock of normalizeThinkTagsInContentBlocks([block])) {
+        enrichedBlocks.push({ block: normalizedBlock, parentToolUseId: message.parent_tool_use_id })
+      }
+    }
+  }
+
+  const agentToolIds = new Set<string>()
+  for (const { block } of enrichedBlocks) {
+    if (block.type !== 'tool_use') continue
+    const tool = block as { name: string; id: string }
+    if (tool.name === 'Agent' || tool.name === 'Task') agentToolIds.add(tool.id)
+  }
+
+  const topLevelBlocks = enrichedBlocks
+    .filter(({ parentToolUseId }) => !parentToolUseId || !agentToolIds.has(parentToolUseId))
+    .map(({ block }) => block)
+
+  const { taskActivities } = buildTaskProgressData(topLevelBlocks, turn.turnMessages)
+  return { taskActivities }
+}
+
+
+// ===== AssistantTurnRenderer — 渲染一个完整的 assistant turn =====
+
+export interface AssistantTurnRendererProps {
+  turn: AssistantTurn
+  /** 所有消息（全局，供工具结果查找跨 turn 的结果） */
+  allMessages: SDKMessage[]
+  basePath?: string
+  /** 分叉回调（传入最后一条 assistant 消息的 uuid） */
+  onFork?: (upToMessageUuid: string) => void
+  /** 错误重试回调（传入本轮开始前应删除的错误 UUID） */
+  onRetry?: (errorUuid?: string) => void
+  /** 在新会话中重试回调（仅当 turn 含错误消息时使用） */
+  onRetryInNewSession?: () => void
+  /** 压缩上下文回调（仅 prompt_too_long 错误使用） */
+  onCompact?: () => void
+  /** 是否正在流式输出中（隐藏操作栏） */
+  isStreaming?: boolean
+  /** 是否被用户中断 */
+  stoppedByUser?: boolean
+  /** 用户在前端选择的模型 ID（优先用于显示名称） */
+  sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
+  /** 稳定 Turn ID，用于跨 partial/final 保存手动折叠状态。 */
+  turnId?: string
+  /** 子智能体详情等完整记录模式强制展开活动。 */
+  fullTranscript?: boolean
+  /** 仅渲染执行活动，最终正文由外层独立区域承载。 */
+  hideFinalItems?: boolean
+  /** 是否为主会话当前最后一个 Assistant Turn。 */
+  isLatestAssistantTurn?: boolean
+  /** 主回合已结束但仍有后台任务时，允许继续展示后台子任务活动。 */
+  backgroundWaiting?: boolean
+  /** 权限、AskUser、ExitPlan、压缩等专用状态正在展示时，不叠加通用等待反馈。 */
+  suppressWaitingFeedback?: boolean
+  /** 当前流式执行的开始时间，用于终态耗时摘要。 */
+  runningStartedAt?: number
+  /** 兜底耗时（毫秒）：无法从 SDK 消息计算执行时长时使用（如被中断的历史会话）。 */
+  fallbackDurationMs?: number
+}
+
+function useRunningDurationMs(startedAt: number | undefined, active: boolean): number | undefined {
+  const [now, setNow] = React.useState(() => Date.now())
+
+  React.useEffect(() => {
+    if (!active || startedAt == null) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [active, startedAt])
+
+  return active && startedAt != null
+    ? Math.max(0, now - startedAt)
+    : undefined
+}
+
+export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId, turnId, fullTranscript, hideFinalItems, isLatestAssistantTurn, backgroundWaiting, suppressWaitingFeedback, runningStartedAt, fallbackDurationMs }: AssistantTurnRendererProps): React.ReactElement | null {
+  const { language } = useTranslation()
+  const planDocument = React.useMemo(() => extractPlanDocument(turn.turnMessages), [turn.turnMessages])
+  const runtimeGraph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId ?? ''))
+  const childSessions = useAtomValue(agentChildDelegationSessionsAtomFamily(sessionId ?? ''))
+  const backgroundTasks = useAtomValue(backgroundTasksAtomFamily(sessionId ?? ''))
+  const pinTargetUuid = [...turn.assistantMessages]
+    .reverse()
+    .find(message => !message.parent_tool_use_id && typeof message.uuid === 'string')
+    ?.uuid
+  // 收集所有 assistant 消息的内容块，保留 parent_tool_use_id 关联
+  interface EnrichedBlock {
+    block: SDKContentBlock
+    parentToolUseId?: string | null
+    /** stop_reason=tool_use 的顶层 text 是过程说明，不是最终回答。 */
+    forcedActivity: boolean
+  }
+
+  const enrichedBlocks: EnrichedBlock[] = []
+  let hasError = false
+  let errorContent: SDKAssistantMessage | null = null
+
+  // 保留 Runtime 生命周期顺序，只合并同一原生消息 ID 的 partial/final 快照。
+  // 该投影不会按正文内容去重，因此模型确实重复的文本仍会完整显示。
+  const projectedAssistantMessages = orderAssistantMessagesForPresentation(turn)
+  for (const aMsg of projectedAssistantMessages) {
+    const msgAny = aMsg as unknown as Record<string, unknown>
+    // 区分两种错误消息：
+    // 1. Orchestrator 造的纯错误消息（带 _errorCode）：content 里的 text 就是错误摘要，不当正文渲染
+    // 2. Pi 混合消息（只带 error、无 _errorCode）：provider 已吐完正文后收尾报错，content 是真正的 assistant 正文
+    const isPureErrorSummary = typeof msgAny._errorCode === 'string'
+    if (aMsg.error) {
+      hasError = true
+      errorContent = aMsg
+      // 纯错误消息的 content 不当正文渲染（避免错误摘要重复出现两次）
+      if (isPureErrorSummary) continue
+      // Pi 混合消息：继续向下把 content 收集进 enrichedBlocks，保留真正的助手正文
+    }
+    const blocks = aMsg.message?.content
+    if (Array.isArray(blocks)) {
+      const forcedActivity = aMsg.message?.stop_reason === 'tool_use'
+      for (const block of blocks) {
+        for (const normalizedBlock of normalizeThinkTagsInContentBlocks([block])) {
+          enrichedBlocks.push({
+            block: normalizedBlock,
+            parentToolUseId: aMsg.parent_tool_use_id,
+            forcedActivity,
+          })
+        }
+      }
+    }
+  }
+
+  // 构建 Agent/Task tool_use → 子代理内容块映射
+  const agentToolIds = new Set<string>()
+  for (const eb of enrichedBlocks) {
+    if (eb.block.type === 'tool_use') {
+      const tu = eb.block as { name: string; id: string }
+      if (tu.name === 'Agent' || tu.name === 'Task') {
+        agentToolIds.add(tu.id)
+      }
+    }
+  }
+
+  const childBlocksMap = new Map<string, SDKContentBlock[]>()
+  const topLevelBlocks: SDKContentBlock[] = []
+  const forcedActivityIndexes = new Set<number>()
+
+  for (const eb of enrichedBlocks) {
+    if (eb.parentToolUseId && agentToolIds.has(eb.parentToolUseId)) {
+      const children = childBlocksMap.get(eb.parentToolUseId) ?? []
+      children.push(eb.block)
+      childBlocksMap.set(eb.parentToolUseId, children)
+    } else {
+      if (eb.forcedActivity) forcedActivityIndexes.add(topLevelBlocks.length)
+      topLevelBlocks.push(eb.block)
+    }
+  }
+
+  const resolvedTurnId = turnId ?? turn.assistantMessages[0]?.uuid ?? 'assistant-turn'
+  const failedToolIds = React.useMemo(() => {
+    const ids = new Set<string>()
+    for (const message of turn.turnMessages) {
+      if (message.type !== 'user') continue
+      const content = (message as SDKUserMessage).message?.content
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type !== 'tool_result') continue
+        const result = block as SDKToolResultBlock
+        if (result.is_error && !isParallelToolCallCancellation(extractToolResultText(result.content), true)) {
+          ids.add(result.tool_use_id)
+        }
+      }
+    }
+    return ids
+  }, [turn.turnMessages])
+  // 普通完成后不能仅凭旧 runtimeGraph 把历史 Turn 重新判为运行中。
+  // 只有真实流式回合，或主回合结束但明确处于后台等待态时，才读取运行节点。
+  const shouldTrackRunningSubagents = !!isStreaming
+    || (!!isLatestAssistantTurn && !!backgroundWaiting)
+  const runningRuntimeNodes = shouldTrackRunningSubagents
+    ? (runtimeGraph?.nodes ?? []).filter((node) =>
+      node.kind !== 'shell'
+      && node.turnCompletionPolicy !== 'detach'
+      && (node.status === 'queued' || node.status === 'running'),
+    )
+    : []
+  const runningChildSessions = shouldTrackRunningSubagents
+    ? childSessions.filter((session) =>
+      session.delegationStatus === 'running'
+      || session.runtimeWorkerState === 'busy'
+      || session.runtimeWorkerState === 'starting',
+    )
+    : []
+  const hasRunningSubagent = runningRuntimeNodes.length > 0
+    || runningChildSessions.length > 0
+  const runningActivityToolIds = React.useMemo(() => {
+    const toolIds = new Set<string>()
+    for (const node of runningRuntimeNodes) {
+      if (node.toolUseId) toolIds.add(node.toolUseId)
+    }
+
+    if (runningChildSessions.length === 0) return toolIds
+
+    const activeDelegationIds = new Set(
+      runningChildSessions
+        .map((session) => session.sourceDelegationId)
+        .filter((id): id is string => Boolean(id)),
+    )
+    const activeChildSessionIds = new Set(
+      runningChildSessions.map((session) => session.id),
+    )
+    const activeTitles = new Set(
+      runningChildSessions.map((session) => session.title),
+    )
+    const delegationBlocks = topLevelBlocks.filter(
+      (block): block is SDKToolUseBlock =>
+        block.type === 'tool_use'
+        && COLLABORATION_DELEGATION_TOOL_NAMES.has(
+          (block as SDKToolUseBlock).name,
+        ),
+    )
+
+    for (const block of delegationBlocks) {
+      const references = extractDelegationReferences(
+        findToolResultText(turn.turnMessages, block.id),
+      )
+      const requestedTitles = extractDelegationTitles(block.input)
+      const matchesRunningSession = (
+        [...references.delegationIds].some((id) => activeDelegationIds.has(id))
+        || [...references.childSessionIds].some((id) => activeChildSessionIds.has(id))
+        || [...requestedTitles].some((title) => activeTitles.has(title))
+      )
+      if (matchesRunningSession) toolIds.add(block.id)
+    }
+
+    if (
+      !delegationBlocks.some((block) => toolIds.has(block.id))
+      && delegationBlocks.length > 0
+    ) {
+      const latestDelegationBlock = delegationBlocks.at(-1)
+      if (latestDelegationBlock) toolIds.add(latestDelegationBlock.id)
+    }
+    return toolIds
+  }, [
+    runningChildSessions,
+    runningRuntimeNodes,
+    topLevelBlocks,
+    turn.turnMessages,
+  ])
+  const backgroundStartedAt = React.useMemo(() => {
+    const timestamps = [
+      ...runningRuntimeNodes.map((node) => node.startedAt),
+      ...runningChildSessions.map((session) => session.createdAt),
+    ].filter((timestamp): timestamp is number => typeof timestamp === 'number')
+    return timestamps.length > 0 ? Math.min(...timestamps) : undefined
+  }, [runningChildSessions, runningRuntimeNodes])
+  const isTurnExecuting = !!isStreaming || (
+    !!isLatestAssistantTurn
+    && !!backgroundWaiting
+    && hasRunningSubagent
+  )
+  // 轮次级中断优先：续聊会清掉 session 级 stoppedByUser，但历史轮仍应显示「你在 N 秒后停止了」
+  const turnStoppedByUser = Boolean(stoppedByUser) || isTurnStoppedByUser(turn.turnMessages)
+  // 停止后也需要耗时来显示"你在 N秒后停止了"，但不需持续刷新
+  const runningDurationMs = useRunningDurationMs(
+    runningStartedAt ?? backgroundStartedAt,
+    isTurnExecuting && !turnStoppedByUser,
+  )
+  // 用户中断后冻结耗时，避免 stopped 状态继续随秒跳动
+  const frozenStopDurationMs = React.useRef<number | undefined>(undefined)
+  if (!turnStoppedByUser) {
+    frozenStopDurationMs.current = undefined
+  } else if (frozenStopDurationMs.current == null) {
+    const liveElapsed = runningStartedAt != null
+      ? Math.max(0, Date.now() - runningStartedAt)
+      : undefined
+    const candidate = runningDurationMs
+      ?? liveElapsed
+      ?? (fallbackDurationMs != null && fallbackDurationMs >= 0 ? fallbackDurationMs : undefined)
+    frozenStopDurationMs.current = candidate
+  } else if (
+    (frozenStopDurationMs.current == null || frozenStopDurationMs.current <= 0)
+    && fallbackDurationMs != null
+    && fallbackDurationMs >= 0
+  ) {
+    frozenStopDurationMs.current = fallbackDurationMs
+  }
+  const presentation = React.useMemo(
+    () => buildCursorTurnPresentation({
+      id: resolvedTurnId,
+      turn,
+      blocks: topLevelBlocks,
+      allMessages,
+      isStreaming: isTurnExecuting && !turnStoppedByUser,
+      runningDurationMs: turnStoppedByUser
+        ? frozenStopDurationMs.current ?? runningDurationMs ?? fallbackDurationMs
+        : runningDurationMs,
+      stoppedByUser: turnStoppedByUser,
+      hasRunningSubagent: hasRunningSubagent && !!backgroundWaiting,
+      runningActivityToolIds,
+      forcedActivityIndexes,
+      hasErrorOrBlockingItem: hasError,
+      suppressWaitingFeedback,
+    }),
+    [
+      fallbackDurationMs,
+      allMessages,
+      backgroundWaiting,
+      forcedActivityIndexes,
+      hasError,
+      hasRunningSubagent,
+      isTurnExecuting,
+      runningDurationMs,
+      runningActivityToolIds,
+      resolvedTurnId,
+      suppressWaitingFeedback,
+      turnStoppedByUser,
+      topLevelBlocks,
+      turn,
+    ],
+  )
+  const isActivelyStreaming = presentation.status === 'running'
+
+  // 本轮「文件名 → 绝对路径」映射：与 footer chips 同源，供正文内联文件引用补全裸文件名
+  const turnFileMap = React.useMemo(
+    () => buildTurnFileNameMap(turn.turnMessages),
+    [turn.turnMessages]
+  )
+
+  // 如果只有错误消息
+  if (enrichedBlocks.length === 0 && hasError && errorContent) {
+    return (
+      <ErrorMessage
+        message={errorContent}
+        onRetry={onRetry}
+        onRetryInNewSession={onRetryInNewSession}
+        onCompact={onCompact}
+      />
+    )
+  }
+
+  // 流式执行中即使还没有 block（首个 SSE 未到达），也要显示"正在思考"占位
+  // 用户中断且没有任何 assistant 内容时，仍需要显示"你在 N秒后停止了"状态行（规则文档第 8/14 节）
+  const isStoppedWithoutContent = enrichedBlocks.length === 0
+    && !hasError
+    && !isActivelyStreaming
+    && (turnStoppedByUser || presentation.status === 'stopped')
+  if (enrichedBlocks.length === 0 && !hasError && !isActivelyStreaming && !isStoppedWithoutContent) return null
+  if (hideFinalItems && presentation.activities.length === 0 && !hasError
+    && !isActivelyStreaming && !isStoppedWithoutContent) {
+    return null
+  }
+
+  const renderTopLevelBlock = (
+    block: SDKContentBlock,
+    i: number,
+    options?: {
+      activityRunning?: boolean
+      activityItem?: boolean
+    },
+  ): React.ReactNode => {
+    if (['plan', 'proposed_plan', 'plan_proposal', 'proposed-plan'].includes(block.type)) return null
+    if (planDocument && block.type === 'text' && typeof block.text === 'string') {
+      const text = block.text.trim()
+      // 只移走属于计划的正文；审批后同轮的执行回复仍在消息区显示。
+      if (text && (`\n\n${planDocument.content.trim()}\n\n`).includes(`\n\n${text}\n\n`)) return null
+    }
+
+
+    // 任务进度由底部浮层统一呈现，输出记录不再重复显示任务卡。
+    if (block.type === 'tool_use' && TASK_TOOL_NAMES.has((block as SDKToolUseBlock).name)) {
+      return null
+    }
+
+    const isAgentTool = block.type === 'tool_use'
+      && ((block as { name: string }).name === 'Agent' || (block as { name: string }).name === 'Task')
+    const childBlocks = isAgentTool
+      ? childBlocksMap.get((block as { id: string }).id)
+      : undefined
+
+    return (
+      <ContentBlock
+        key={
+          // 稳定 key：不要把正文内容拼进 key，否则流式增量会卸载重挂 → 视觉“跳”
+          block.type === 'tool_use'
+            ? `tool:${(block as SDKToolUseBlock).id}`
+            : block.type === 'text'
+              ? `text:${i}`
+              : block.type === 'thinking'
+                ? `thinking:${i}`
+                : `block:${i}:${block.type}`
+        }
+        block={block}
+        allMessages={allMessages}
+        basePath={basePath}
+        animate={!!isStreaming && options?.activityRunning === true}
+        index={i}
+        childBlocks={childBlocks}
+        isStreaming={isStreaming}
+        sessionId={sessionId}
+        activityRunning={options?.activityRunning}
+        activityItem={options?.activityItem}
+      />
+    )
+  }
+  return (
+    <Message
+      from="assistant"
+      data-agent-assistant-message
+      data-native-message-uuid={pinTargetUuid}
+    >
+      <MessageContent
+        className="[--md-preview-font-size:14px]"
+        data-agent-assistant-content
+      >
+        <TurnFileMapProvider map={turnFileMap}>
+        <AgentTurnTimeline
+          presentation={presentation}
+          sessionId={sessionId}
+          model={sessionModelId}
+          fullTranscript={fullTranscript}
+          hideFinalItems={hideFinalItems}
+          hideStatus={!isStreaming}
+          failedToolIds={failedToolIds}
+          revealTools={hasRunningSubagent}
+          renderActivity={(item) => renderTopLevelBlock(item.block, item.index, {
+            activityRunning: item.running,
+            activityItem: true,
+          })}
+          renderFinal={(block, index) => renderTopLevelBlock(block, index)}
+        />
+        {!hideFinalItems && planDocument && (
+          <ProposedPlanCard stage={getPlanDocumentStage(allMessages, planDocument)} documentId={planDocument.id} content={planDocument.content} sessionId={sessionId} streaming={isActivelyStreaming} />
+        )}
+        {/* 如果有错误但也有内容块，在末尾以 tail 形式挂错误横幅附错误提示 + 重试按钮，保留正文本身的 markdown 排版 */}
+        {hasError && errorContent && topLevelBlocks.length > 0 && (
+          <AssistantErrorTail
+            message={errorContent}
+            onRetry={onRetry}
+            onRetryInNewSession={onRetryInNewSession}
+            onCompact={onCompact}
+          />
+        )}
+        </TurnFileMapProvider>
+      </MessageContent>
+      {sessionId && (
+        <BackgroundTasksSummary
+          sessionId={sessionId}
+          tasks={backgroundTasks}
+          turnId={turnId}
+          toolUseIds={enrichedBlocks.flatMap(({ block }) => block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : [])}
+        />
+      )}
+      {/* 文件改动汇总：流式结束后展示本轮所有 Edit/Write/MultiEdit/NotebookEdit 文件 */}
+      {!isStreaming && (
+        <TurnFileChangesSummary turnMessages={turn.turnMessages} basePath={basePath} />
+      )}
+      {/* 操作栏：流式输出完成后显示操作按钮 */}
+      {!isStreaming && (() => {
+        const copyItems = presentation.finalItems.length > 0
+          ? presentation.finalItems.filter((item) => item.kind === 'answer')
+          : presentation.activities
+        const textContent = copyItems
+          .filter((item) => item.block.type === 'text')
+          .map((item) => (item.block as { text: string }).text)
+          .join('\n\n')
+        // 仅取主线 assistant 消息的 uuid 作为 fork/rewind 截断点。
+        // SDK forkSession 内部会过滤掉 sidechain（parent_tool_use_id 非空的子代理消息），
+        // 若把子代理 uuid 传过去会触发 "Message <uuid> not found in session" 错误。
+        const lastUuid = pinTargetUuid
+        const hasActions = !!(textContent || (onFork && lastUuid) || (sessionId && lastUuid))
+        const completedAt = turn.turnMessages.reduce<number | undefined>((latest, message) => {
+          const timestamp = getMessageTimestamp(message)
+          return timestamp == null ? latest : Math.max(latest ?? timestamp, timestamp)
+        }, undefined)
+        const showCompletionTime = completedAt != null && presentation.status === 'completed'
+        if (!hasActions && presentation.status === 'running') return null
+        return (
+          <MessageActions
+            className="mt-0.5 min-h-[28px] justify-start group-[.is-assistant]:pl-0"
+            data-agent-assistant-actions
+          >
+            {textContent && <CopyButton content={textContent} />}
+            {onFork && lastUuid && (
+              <MessageAction tooltip={language === 'zh' ? '按当前模型从此处分叉' : 'Fork from here with the current model'} onClick={() => onFork(lastUuid)}>
+                <Split className="size-3.5" />
+              </MessageAction>
+            )}
+            {sessionId && lastUuid && (
+              <MessagePinAction sessionId={sessionId} messageUuid={lastUuid} />
+            )}
+            {showCompletionTime ? <AgentMessageTime timestamp={completedAt} /> : presentation.status !== 'running' && (
+              <AgentTurnStatusLine compact className="ml-1"
+                model={presentation.model ?? sessionModelId}
+                status={presentation.status}
+                durationMs={presentation.durationMs}
+                usage={presentation.usage}
+              />
+            )}
+          </MessageActions>
+        )
+      })()}
+    </Message>
+  )
+}
+
+// ===== SDKMessageRenderer 主组件（用于实时消息逐条渲染） =====
+
+export function SDKMessageRenderer({
+  message,
+  allMessages,
+  basePath,
+  showHeader = true,
+  sessionModelId,
+  sessionId,
+}: SDKMessageRendererProps): React.ReactElement | null {
+  const msgType = message.type
+
+  // assistant 消息：遍历内容块渲染
+  if (msgType === 'assistant') {
+    const aMsg = message as SDKAssistantMessage
+
+    // 跳过重放消息
+    if (aMsg.isReplay) return null
+
+    // 错误消息分发：
+    // - Orchestrator 造的纯错误消息（带 _errorCode）：直接走 ErrorMessage 组件
+    // - Pi 混合消息（只带 error、无 _errorCode）：走下方正常渲染 + 末尾挂 tail
+    //   与 AssistantTurnRenderer 对齐：不检查 hasRenderableContent，有 blocks 就正常渲染正文，
+    //   没有 blocks 才回退到 ErrorMessage
+    if (aMsg.error) {
+      const msgAny = aMsg as unknown as Record<string, unknown>
+      const isPureErrorSummary = typeof msgAny._errorCode === 'string'
+      if (isPureErrorSummary) {
+        return <ErrorMessage message={aMsg} />
+      }
+      // Pi 混合消息：下面按正常路径收集 content blocks，末尾挂 AssistantErrorTail
+    }
+
+    const rawBlocks = aMsg.message?.content
+    if (!Array.isArray(rawBlocks) || rawBlocks.length === 0) {
+      if (aMsg.error) return <ErrorMessage message={aMsg} />
+      return null
+    }
+    const blocks = normalizeThinkTagsInContentBlocks(rawBlocks)
+    if (blocks.length === 0) {
+      if (aMsg.error) return <ErrorMessage message={aMsg} />
+      return null
+    }
+
+    const model = aMsg._channelModelId || aMsg.message?.model || sessionModelId
+    const displayBlocks = blocks.filter((block) => block.type !== 'thinking')
+    // 检测是否有主要内容（text 块）
+    const hasTextContent = displayBlocks.some(
+      (b) => b.type === 'text' && 'text' in b && !!(b as { text: string }).text
+    )
+
+    return (
+      <Message
+        from="assistant"
+        data-agent-assistant-message
+        data-native-message-uuid={aMsg.uuid}
+      >
+        <MessageContent
+          className="[--md-preview-font-size:14px]"
+          data-agent-assistant-content
+        >
+          <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-2">
+            {showHeader && <AgentModelLogo model={model} className="mt-0.5" />}
+            <div className={cn('space-y-2', !showHeader && 'col-span-2')}>
+            {displayBlocks.map((block, i) => (
+              <ContentBlock
+                key={i}
+                block={block}
+                allMessages={allMessages}
+                basePath={basePath}
+                index={i}
+                dimmed={hasTextContent && block.type !== 'text'}
+                sessionId={sessionId}
+              />
+            ))}
+            </div>
+          </div>
+          {/* Provider 已吐正文但收尾报错的混合消息：末尾挂错误横幅。 */}
+          {aMsg.error && (
+            <AssistantErrorTail message={aMsg} />
+          )}
+        </MessageContent>
+        {sessionId && aMsg.uuid && (
+          <MessageActions className="mt-0.5 min-h-[28px] justify-start" data-agent-assistant-actions>
+            <MessagePinAction sessionId={sessionId} messageUuid={aMsg.uuid} />
+          </MessageActions>
+        )}
+      </Message>
+    )
+  }
+
+  // user 消息
+  if (msgType === 'user') {
+    const uMsg = message as SDKUserMessage
+    if (isUserInputMessage(uMsg)) {
+      return <UserInputMessage message={uMsg} sessionId={sessionId} />
+    }
+    return null
+  }
+
+  // system 消息
+  if (msgType === 'system') {
+    const sysMsg = message as SDKSystemMessage
+    const subtype = sysMsg.subtype
+    const compactStatus = getSDKCompactStatus(sysMsg)
+
+    if (compactStatus) return <CompactStatusNotice message={sysMsg} />
+    if (subtype === 'auto_mode_classifier') {
+      return <AutoModeClassifierNotice message={sysMsg} />
+    }
+    if (subtype === 'permission_denied') {
+      return <PermissionDeniedNotice message={sysMsg} />
+    }
+    if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
+      return <HookLifecycleNotice message={sysMsg} />
+    }
+
+    return null
+  }
+
+  return null
+}
+
+// ===== 附件解析 =====
+
+/** 解析的附件引用 */
+export interface AttachedFileRef {
+  filename: string
+  path: string
+}
+
+/** 解析的引用文件 */
+export type QuotedFileRef = ParsedQuotedSelectionRef
+
+/** 解析消息中的 <attached_files>、<quoted_file> 和 <quoted_context> 块，返回文件列表、引用列表和剩余文本 */
+export function parseAttachedFiles(content: string): { files: AttachedFileRef[]; quotes: QuotedFileRef[]; text: string } {
+  const parsedQuotes = parseQuotedSelectionRefs(content)
+  const quotes: QuotedFileRef[] = parsedQuotes.quotes
+
+  const regex = /<attached_files>\n?([\s\S]*?)\n?<\/attached_files>\n*/
+  const match = content.match(regex)
+  if (!match) {
+    return { files: [], quotes, text: parsedQuotes.text }
+  }
+
+  const files: AttachedFileRef[] = []
+  const lines = match[1]!.split('\n')
+  for (const line of lines) {
+    const lineMatch = line.match(/^-\s+(.+?):\s+(.+)$/)
+    if (lineMatch) {
+      files.push({ filename: lineMatch[1]!.trim(), path: lineMatch[2]!.trim() })
+    }
+  }
+
+  const text = parsedQuotes.text.replace(regex, '').trim()
+  return { files, quotes, text }
+}
+
+/** 判断文件是否为图片类型 */
+export function isImageFile(filename: string): boolean {
+  return /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(filename)
+}
+
+/** 图片附件缩略图，点击可预览大图 */
+function AttachedImageThumb({ file, index, onOpen, onLoaded, compact = false }: {
+  file: AttachedFileRef
+  /** 该图在同批图片中的索引 */
+  index: number
+  /** 点击缩略图打开大图预览（第 index 张） */
+  onOpen: (index: number) => void
+  /** 图片 src 加载完成上报父组件（供共享 lightbox 翻页使用） */
+  onLoaded: (path: string, src: string) => void
+  compact?: boolean
+}): React.ReactElement {
+  const { language } = useTranslation()
+  const [imageSrc, setImageSrc] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    const ext = file.filename.split('.').pop()?.toLowerCase() ?? 'png'
+    const mimeMap: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+      gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp',
+    }
+    const mediaType = mimeMap[ext] ?? 'image/png'
+
+    window.electronAPI
+      .readAttachment(file.path)
+      .then((base64) => {
+        const src = `data:${mediaType};base64,${base64}`
+        setImageSrc(src)
+        onLoaded(file.path, src)
+      })
+      .catch((err) => console.error('[AttachedImageThumb] 读取附件失败:', err))
+  }, [file.path, file.filename, onLoaded])
+
+  const handleSave = React.useCallback((): void => {
+    window.electronAPI.saveImageAs(file.path, file.filename)
+  }, [file.path, file.filename])
+
+  if (!imageSrc) {
+    return <div className="w-[200px] h-[140px] rounded-lg bg-muted/30 animate-pulse shrink-0" />
+  }
+
+  return (
+    <div className="relative group inline-block max-w-full">
+      <button type="button" onClick={() => onOpen(index)} className="block max-w-full overflow-hidden rounded-lg border border-border/70 shadow-sm" aria-label={language === 'zh' ? `查看图片：${file.filename}` : `View image: ${file.filename}`}>
+      <img
+        src={imageSrc}
+        alt={file.filename}
+        className={cn('max-w-full object-contain', compact ? 'max-h-[200px] w-auto' : 'max-h-[320px] w-auto sm:max-w-[min(480px,100%)]')}
+      />
+      </button>
+      <button
+        type="button"
+        onClick={handleSave}
+        className="absolute bottom-2 right-2 p-1.5 rounded-md bg-black/50 text-white opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:bg-black/70"
+        title={language === 'zh' ? '保存图片' : 'Save image'}
+      >
+        <Download className="size-4" />
+      </button>
+    </div>
+  )
+}
+
+/** 文件附件芯片 */
+function AttachedFileChip({ file }: { file: AttachedFileRef }): React.ReactElement {
+  const isImg = isImageFile(file.filename)
+  const Icon = isImg ? FileImage : FileText
+  const activeSessionId = useAtomValue(activeSessionIdAtom)
+  const openPreview = useOpenPreview()
+
+  const handleOpenPreview = React.useCallback((): void => {
+    if (!activeSessionId) return
+    const parentPath = getFileParentPath(file.path)
+    openPreview(activeSessionId, {
+      filePath: file.path,
+      previewOnly: true,
+      readOnly: true,
+      basePaths: parentPath ? [parentPath] : undefined,
+    })
+  }, [activeSessionId, file.path, openPreview])
+
+  return (
+    <button
+      type="button"
+      onClick={handleOpenPreview}
+      disabled={!activeSessionId}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2.5 py-1 text-[12px] text-muted-foreground',
+        'transition-colors hover:bg-muted hover:text-foreground disabled:cursor-default disabled:hover:bg-muted/60 disabled:hover:text-muted-foreground'
+      )}
+      title={file.path}
+    >
+      <Icon className="size-3.5 shrink-0" />
+      <span className="truncate max-w-[200px]">{file.filename}</span>
+    </button>
+  )
+}
+
+/** 引用文件 Chip（显示在用户消息中，表示该消息引用了某个文件的选中内容） */
+function QuoteChip({ quote }: { quote: QuotedFileRef }): React.ReactElement {
+  const label = quote.label ?? quote.filename
+  return (
+    <div className="inline-flex items-center gap-1.5 rounded-md bg-primary/8 border border-primary/20 px-2.5 py-1 text-[12px] text-muted-foreground">
+      <Quote className="size-3.5 shrink-0 text-primary/60" />
+      <span className="truncate max-w-[200px]">{label}</span>
+    </div>
+  )
+}
+
+// ===== 用户输入消息渲染 =====
+
+
+const SCHEDULED_RUN_MARKER = '<!--PROMA_SCHEDULED_RUN-->'
+
+// stripScheduledRunMarker 已迁移至 @proma/session-core（本文件从该包 import 使用）
+
+function ScheduledRunBadge(): React.ReactElement {
+  const activeSessionId = useAtomValue(activeSessionIdAtom)
+  const sessions = useAtomValue(agentSessionsAtom)
+  const automations = useAtomValue(automationsAtom)
+  const setForm = useSetAtom(automationFormAtom)
+  const setActiveView = useSetAtom(activeViewAtom)
+
+  const session = sessions.find((s) => s.id === activeSessionId)
+  const automation = session?.sourceAutomationId && !session.sourceDelegationId
+    ? automations.find((a) => a.id === session.sourceAutomationId)
+    : undefined
+
+  const handleClick = (): void => {
+    if (!automation) return
+    setActiveView('automations')
+    setForm({
+      open: true,
+      draft: automationToDraft(automation),
+    })
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className="inline-flex items-center gap-1 text-[10px] text-primary/70 hover:text-primary transition-colors"
+      title="来自 Xcodes 定时任务，点击查看设置"
+    >
+      <Clock className="size-3" />
+      <span>来自 Xcodes 定时任务</span>
+    </button>
+  )
+}
+
+/**
+ * 用户消息的回退点是它之前最近一条主线 assistant 消息。
+ * Runtime 的 rewind API 接收 assistant UUID，因此这里不把用户 UUID 伪装成检查点。
+ */
+export function findRewindTargetBeforeUser(
+  allMessages: SDKMessage[],
+  userMessage: SDKUserMessage,
+): string | undefined {
+  const targetIndex = allMessages.findIndex((message) => (
+    message === userMessage
+    || (
+      userMessage.uuid != null
+      && message.type === 'user'
+      && (message as SDKUserMessage).uuid === userMessage.uuid
+    )
+  ))
+  if (targetIndex <= 0) return undefined
+  for (let index = targetIndex - 1; index >= 0; index -= 1) {
+    const message = allMessages[index]
+    if (message?.type !== 'assistant') continue
+    const assistant = message as SDKAssistantMessage
+    if (!assistant.parent_tool_use_id && assistant.uuid) return assistant.uuid
+  }
+  return undefined
+}
+
+function UserInputMessage({
+  message,
+  pending = false,
+  sessionId,
+  onFork,
+  onRewind,
+  rewindTargetUuid,
+}: {
+  message: SDKUserMessage
+  pending?: boolean
+  sessionId?: string
+  onFork?: (messageUuid: string) => void
+  onRewind?: (assistantMessageUuid: string) => void
+  rewindTargetUuid?: string
+}): React.ReactElement {
+  const { language } = useTranslation()
+  const timestamp = getMessageTimestamp(message)
+  const rawText = extractUserText(message) ?? ''
+  const isScheduledRun = rawText.includes(SCHEDULED_RUN_MARKER)
+  const { files: attachedFiles, quotes, text } = parseAttachedFiles(stripScheduledRunMarker(rawText))
+  const imageFiles = attachedFiles.filter((f) => isImageFile(f.filename))
+  const activeSessionId = useAtomValue(activeSessionIdAtom)
+  const setSessionPendingFiles = useSetAtom(agentSessionPendingFilesAtom)
+  const nonImageFiles = attachedFiles.filter((f) => !isImageFile(f.filename))
+
+  const handleImageEditComplete = React.useCallback((editedDataUrl: string): void => {
+    const base64 = editedDataUrl.split(',')[1]
+    if (!base64 || !activeSessionId) return
+
+    const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const pending: AgentPendingFile = {
+      id,
+      filename: `edited_image_${Date.now()}.png`,
+      mediaType: 'image/png',
+      size: Math.round(base64.length * 0.75),
+      previewUrl: editedDataUrl,
+    }
+
+    if (!window.__pendingAgentFileData) {
+      window.__pendingAgentFileData = new Map()
+    }
+    window.__pendingAgentFileData.set(id, base64)
+
+    setSessionPendingFiles((prev) => {
+      const sessionFiles = prev.get(activeSessionId) ?? []
+      const map = new Map(prev)
+      map.set(activeSessionId, [...sessionFiles, pending])
+      return map
+    })
+  }, [activeSessionId, setSessionPendingFiles])
+
+  // 共享大图预览状态（多图可左右翻页）
+  const [lightboxOpen, setLightboxOpen] = React.useState(false)
+  const [lightboxIndex, setLightboxIndex] = React.useState(0)
+  // 各图加载好的 src（key = file.path）——缩略图渲染时已加载，翻页复用不再触发 IO
+  const [loadedSrcs, setLoadedSrcs] = React.useState<Record<string, string>>({})
+
+  const handleImageLoaded = React.useCallback((path: string, src: string): void => {
+    setLoadedSrcs((prev) => (prev[path] ? prev : { ...prev, [path]: src }))
+  }, [])
+
+  const openLightbox = React.useCallback((index: number): void => {
+    setLightboxIndex(index)
+    setLightboxOpen(true)
+  }, [])
+
+  // lightbox 图片列表（索引与 imageFiles 对齐，每张带自己的保存回调）
+  const lightboxImages = React.useMemo<LightboxImage[]>(
+    () => imageFiles.map((file) => ({
+      src: loadedSrcs[file.path] ?? '',
+      alt: file.filename,
+      onSave: () => window.electronAPI.saveImageAs(file.path, file.filename),
+      onEditComplete: handleImageEditComplete,
+    })),
+    [imageFiles, loadedSrcs, handleImageEditComplete]
+  )
+
+  return (
+    <Message
+      from="user"
+      className="group/agent-user py-2"
+      data-agent-user-message
+      data-native-message-uuid={message.uuid}
+    >
+      {imageFiles.length > 0 && (
+        <div className={cn('mb-1 flex max-w-full flex-wrap justify-end gap-2.5', pending && 'opacity-70')} data-agent-user-images>
+          {imageFiles.map((file, index) => (
+            <AttachedImageThumb key={file.path} file={file} index={index} onOpen={openLightbox} onLoaded={handleImageLoaded} compact={imageFiles.length > 1} />
+          ))}
+        </div>
+      )}
+      {(text || isScheduledRun || quotes.length > 0 || nonImageFiles.length > 0) && (
+      <MessageContent
+        className={cn(
+          'relative overflow-visible break-words text-[14px] font-normal leading-5',
+          'group-[.is-user]:w-fit group-[.is-user]:max-w-full',
+          'group-[.is-user]:items-start group-[.is-user]:rounded-[10px]',
+          'group-[.is-user]:bg-foreground/[0.06] group-[.is-user]:px-3.5 group-[.is-user]:py-2',
+          pending && 'opacity-70 transition-opacity',
+        )}
+        data-agent-user-card
+        data-agent-user-pending={pending || undefined}
+      >
+        {isScheduledRun && (
+          <div className="flex justify-start">
+            <ScheduledRunBadge />
+          </div>
+        )}
+        {/* 引用文件 Chip */}
+        {quotes.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {quotes.map((q, i) => (
+              <QuoteChip key={`${q.path}:${i}`} quote={q} />
+            ))}
+          </div>
+        )}
+        {/* 非图片文件芯片 */}
+        {nonImageFiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {nonImageFiles.map((file) => (
+              <AttachedFileChip key={file.path} file={file} />
+            ))}
+          </div>
+        )}
+        {text && (
+          <UserMessageContent
+            expandLabel={language === 'zh' ? '展开全部' : 'Show more'}
+            collapseLabel={language === 'zh' ? '收起' : 'Show less'}
+            className="[--md-preview-font-size:14px] font-normal leading-5 [&_.prose_li]:leading-5 [&_.prose_p]:leading-5"
+            data-agent-user-body
+          >
+            {text}
+          </UserMessageContent>
+        )}
+      </MessageContent>
+      )}
+      {/* 操作栏独立占位，悬停仅改变可见性，不覆盖正文或撑宽短消息气泡。 */}
+      {(text || timestamp || onFork || (onRewind && rewindTargetUuid) || (sessionId && message.uuid)) && (
+        <MessageActions
+          className={cn(
+            'pointer-events-none h-7 shrink-0 opacity-0 transition-opacity',
+            'group-hover/agent-user:pointer-events-auto group-hover/agent-user:opacity-100',
+            'group-focus-within/agent-user:pointer-events-auto group-focus-within/agent-user:opacity-100',
+          )}
+          data-agent-user-actions
+        >
+          {timestamp != null && <AgentMessageTime timestamp={timestamp} />}
+          {text && <CopyButton content={text} />}
+          {onFork && message.uuid && !pending && (
+            <MessageAction tooltip={language === 'zh' ? '从此处分叉' : 'Fork from here'} onClick={() => onFork(message.uuid!)}>
+              <Split className="size-3.5" />
+            </MessageAction>
+          )}
+          {onRewind && rewindTargetUuid && !pending && (
+            <MessageAction tooltip={language === 'zh' ? '回退到此处' : 'Rewind to here'} onClick={() => onRewind(rewindTargetUuid)}>
+              <Undo2 className="size-3.5" />
+            </MessageAction>
+          )}
+          {sessionId && message.uuid && !pending && (
+            <MessagePinAction sessionId={sessionId} messageUuid={message.uuid} />
+          )}
+        </MessageActions>
+      )}
+      {/* 共享大图预览 — 单图时无翻页，行为同以前 */}
+      {imageFiles.length > 0 && (
+        <ImageLightbox
+          open={lightboxOpen}
+          onOpenChange={setLightboxOpen}
+          images={lightboxImages}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+        />
+      )}
+    </Message>
+  )
+}
+
+// ===== 错误消息渲染 =====
+
+interface ErrorMessageProps {
+  message: SDKAssistantMessage
+  /** 重试回调（在当前会话内重试） */
+  onRetry?: (errorUuid?: string) => void
+  /** 在新会话中重试回调（创建新会话并引用当前会话继续） */
+  onRetryInNewSession?: () => void
+  /** 压缩上下文回调（仅 prompt_too_long 错误使用） */
+  onCompact?: () => void
+}
+
+interface AssistantErrorTailProps {
+  message: SDKAssistantMessage
+  /** 重试回调（在当前会话内重试） */
+  onRetry?: (errorUuid?: string) => void
+  /** 在新会话中重试回调（创建新会话并引用当前会话继续） */
+  onRetryInNewSession?: () => void
+  /** 压缩上下文回调（仅 prompt_too_long 错误使用） */
+  onCompact?: () => void
+  /**
+   * 以「独立错误消息」形式渲染：正文用红色 MessageResponse 展示（用于 ErrorMessage 主体）。
+   *
+   * 以 tail 形式（默认 false）渲染时：正文本身已在上层用普通 MessageResponse 展示，这里只输出
+   * 错误标题 + 简短描述 + 诊断详情 + recovery 按钮，附一条分隔线。
+   */
+  standalone?: boolean
+}
+
+/**
+ * 助手消息的错误尾部（诊断详情 + recovery 按钮 + 简短错误描述）。
+ *
+ * 抽出这个组件是为了让「Provider 已经吐了正文，但收尾时上游报错」这种混合消息
+ * 也能保留正文的 markdown 排版，同时把错误提示以尾部 banner 形式挂在最下面。
+ *
+ * standalone=true 时兼容旧 ErrorMessage 的行为：把 error.message / content 里的所有 text
+ * 一并作为红色 MessageResponse 渲染出来，用于「没有正文，只有错误」的场景。
+ */
+export function AssistantErrorTail({
+  message,
+  onRetry,
+  onRetryInNewSession,
+  onCompact,
+  standalone = false,
+}: AssistantErrorTailProps): React.ReactElement | null {
+  const { t } = useTranslation()
+  const errorText = message.error?.message ?? t('error.unknown')
+
+  const msgAny = message as unknown as Record<string, unknown>
+  const errorTitle = typeof msgAny._errorTitle === 'string' ? msgAny._errorTitle : undefined
+  const errorCode = typeof msgAny._errorCode === 'string' ? msgAny._errorCode : undefined
+  const errorDetails = Array.isArray(msgAny._errorDetails)
+    ? (msgAny._errorDetails as string[])
+    : undefined
+  const errorActions = Array.isArray(msgAny._errorActions)
+    ? (msgAny._errorActions as RecoveryAction[])
+    : undefined
+  const isPromptTooLong = errorCode === 'prompt_too_long'
+
+  const setEnvDialogOpen = useSetAtom(environmentCheckDialogOpenAtom)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setSettingsTab = useSetAtom(settingsTabAtom)
+  const setModelSelectorOpen = useSetAtom(agentModelSelectorOpenAtom)
+  const [detailsOpen, setDetailsOpen] = React.useState(false)
+
+  // Error presentation always uses error.message. Assistant content is not error detail:
+  // Pi may have generated it before a stream failure.
+  const bodyText = errorText
+  const isThinkingSignature = errorCode === THINKING_SIGNATURE_ERROR_CODE ||
+    isThinkingSignatureError(bodyText, errorText)
+  const displayTitle = errorTitle === '执行错误'
+    ? t('error.executionTitle')
+    : errorTitle ?? (isThinkingSignature ? THINKING_SIGNATURE_ERROR_TITLE : undefined)
+  const displayContentText = isThinkingSignature ? THINKING_SIGNATURE_ERROR_MESSAGE : bodyText
+  const displayedErrorActions = (errorActions ?? []).filter((action) => {
+    if (action.action === 'retry' && !onRetry) return false
+    if (action.action === 'compact' && !onCompact) return false
+    if (action.action === 'retry_in_new_session' && !onRetryInNewSession) return false
+    return true
+  })
+
+  const handleRecoveryAction = (action: RecoveryAction) => {
+    switch (action.action) {
+      case 'open_environment_check':
+        setEnvDialogOpen(true)
+        break
+      case 'open_channel_settings':
+        setSettingsTab('channels')
+        setSettingsOpen(true)
+        break
+      case 'settings':
+        setSettingsOpen(true)
+        break
+      case 'select_model':
+        setModelSelectorOpen(true)
+        break
+      case 'open_external':
+        if (action.payload) {
+          window.electronAPI.openExternal(action.payload)
+        }
+        break
+      case 'retry':
+        onRetry?.(typeof message.uuid === 'string' ? message.uuid : undefined)
+        break
+      case 'compact':
+        onCompact?.()
+        break
+      case 'retry_in_new_session':
+        onRetryInNewSession?.()
+        break
+      default:
+        console.warn('[ErrorMessage] 未处理的 recovery action:', action)
+    }
+  }
+
+  const iconForAction = (action: RecoveryAction['action']) => {
+    switch (action) {
+      case 'open_environment_check':
+        return <Wrench className="size-3.5 mr-1.5" />
+      case 'open_channel_settings':
+      case 'settings':
+        return <Settings className="size-3.5 mr-1.5" />
+      case 'select_model':
+        return <Cpu className="size-3.5 mr-1.5" />
+      case 'open_external':
+        return <ExternalLink className="size-3.5 mr-1.5" />
+      case 'retry':
+        return <RotateCw className="size-3.5 mr-1.5" />
+      case 'compact':
+        return <Minimize2 className="size-3.5 mr-1.5" />
+      case 'retry_in_new_session':
+        return <Plus className="size-3.5 mr-1.5" />
+      default:
+        return null
+    }
+  }
+
+  const hasStructuredActions = displayedErrorActions.length > 0
+  const hasLegacyActions = !!(onRetry || onRetryInNewSession || (isPromptTooLong && onCompact))
+  const hasActions = hasStructuredActions || hasLegacyActions
+
+  // tail 模式：给出上边距 + 顶部细边分隔线，让它视觉上是「正文之后的一段警告」而不是「消息本身」
+  const rootClass = standalone
+    ? undefined
+    : 'mt-3 pt-3 border-t border-destructive/20'
+
+  return (
+    <div className={rootClass}>
+      {displayTitle && (
+        <div className="text-sm font-medium text-destructive mb-1 flex items-center gap-1.5">
+          {!standalone && <AlertTriangle size={14} className="shrink-0" />}
+          {displayTitle}
+        </div>
+      )}
+      {standalone ? (
+        <div className="text-destructive">
+          <MessageResponse>{displayContentText}</MessageResponse>
+        </div>
+      ) : (
+        displayContentText && (
+          <div className="text-sm text-destructive/90 whitespace-pre-wrap break-words">
+            {displayContentText}
+          </div>
+        )
+      )}
+      {errorDetails && errorDetails.length > 0 && (
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((v) => !v)}
+            className="underline-offset-2 hover:underline"
+          >
+            {detailsOpen ? t('error.hideDetails') : t('error.showDetails')}
+          </button>
+          {detailsOpen && (
+            <ul className="mt-1.5 space-y-0.5 list-disc list-inside">
+              {errorDetails.map((d, i) => (
+                <li key={i}>{d}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {hasActions && (
+        <div className="flex items-center flex-wrap gap-2 mt-3">
+          {hasStructuredActions &&
+            displayedErrorActions.map((a, i) => (
+              <Button
+                key={`${a.action}-${i}`}
+                size="sm"
+                variant={i === 0 ? 'default' : 'outline'}
+                onClick={() => handleRecoveryAction(a)}
+              >
+                {iconForAction(a.action)}
+                {a.label}
+              </Button>
+            ))}
+          {!hasStructuredActions && isPromptTooLong && onCompact && (
+            <Button size="sm" onClick={onCompact}>
+              <Minimize2 className="size-3.5 mr-1.5" />
+              {t('error.compactContext')}
+            </Button>
+          )}
+          {!hasStructuredActions && isThinkingSignature && onRetryInNewSession && (
+            <Button
+              size="sm"
+              onClick={onRetryInNewSession}
+              title={t('error.continueNewConversationTooltip')}
+            >
+              <Plus className="size-3.5 mr-1.5" />
+              {t('error.continueNewConversation')}
+            </Button>
+          )}
+          {!hasStructuredActions && onRetry && (
+            <Button size="sm" variant={isPromptTooLong || isThinkingSignature ? 'outline' : 'default'} onClick={() => onRetry(typeof message.uuid === 'string' ? message.uuid : undefined)}>
+              <RotateCw className="size-3.5 mr-1.5" />
+              {t('error.retry')}
+            </Button>
+          )}
+          {!hasStructuredActions && !isThinkingSignature && onRetryInNewSession && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRetryInNewSession}
+              title={t('error.retryNewSessionTooltip')}
+            >
+              <Plus className="size-3.5 mr-1.5" />
+              {t('error.retryNewSession')}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: ErrorMessageProps): React.ReactElement {
+  // Do not copy assistant content carried by an error record.
+  const copyText = message.error?.message ?? 'Unknown error'
+
+  return (
+    <Message from="assistant" data-agent-assistant-message>
+      <MessageContent
+        className="[--md-preview-font-size:14px]"
+        data-agent-assistant-content
+      >
+        <AssistantErrorTail
+          message={message}
+          onRetry={onRetry}
+          onRetryInNewSession={onRetryInNewSession}
+          onCompact={onCompact}
+          standalone
+        />
+      </MessageContent>
+      <MessageActions
+        className="mt-0.5"
+        data-agent-assistant-actions
+      >
+        <CopyButton content={copyText} />
+      </MessageActions>
+    </Message>
+  )
+}
+
+// ===== MessageGroup 渲染器（统一入口，同时支持 turn 和单条消息） =====
+
+export interface MessageGroupRendererProps {
+  group: MessageGroup
+  allMessages: SDKMessage[]
+  basePath?: string
+  onFork?: (upToMessageUuid: string) => void
+  onRewind?: (assistantMessageUuid: string) => void
+  /** 错误重试回调（传入本轮开始前应删除的错误 UUID） */
+  onRetry?: (errorUuid?: string) => void
+  /** 在新会话中重试回调（仅当 turn 含错误消息时使用） */
+  onRetryInNewSession?: () => void
+  /** 压缩上下文回调（仅 prompt_too_long 错误使用） */
+  onCompact?: () => void
+  /** 是否正在流式输出中（隐藏操作栏） */
+  isStreaming?: boolean
+  /** 是否被用户中断 */
+  stoppedByUser?: boolean
+  /** 用户在前端选择的模型 ID（优先用于显示名称） */
+  sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
+  /** 完整 transcript 模式强制展开整轮活动。 */
+  fullTranscript?: boolean
+  /** 仅渲染执行活动，最终正文由外层独立区域承载。 */
+  hideFinalItems?: boolean
+  isLatestAssistantTurn?: boolean
+  backgroundWaiting?: boolean
+  /** 当前用户消息仅为乐观展示，尚未被 Pi 原生 transcript 消费。 */
+  pendingUserMessage?: boolean
+  /** 权限、AskUser、ExitPlan、压缩等专用状态正在展示时，不叠加通用等待反馈。 */
+  suppressWaitingFeedback?: boolean
+  /** 用户停止压缩时，用 stopped 原位替换 Runtime 持久化的 abort failed 行。 */
+  compactionStatusOverride?: CompactionStatusLineStatus
+  runningStartedAt?: number
+  /** 中断耗时兜底（meta/result 缺失时由列表层估算） */
+  fallbackDurationMs?: number
+}
+
+/**
+ * WeakMap 缓存：为没有 uuid 的消息生成稳定的 fallback ID
+ * 使用 message 对象（而非 group 对象）作为 key，因为 group 在 useMemo 重算时会
+ * 被重建为新对象，而 group.message 引用的底层 SDK message 对象是稳定的。
+ */
+const messageIdCache = new WeakMap<object, string>()
+let fallbackIdCounter = 0
+
+/**
+ * 从 MessageGroup 中提取稳定的 ID，用于 data-message-id 和迷你地图
+ */
+export function getGroupId(group: MessageGroup): string {
+  if (group.type === 'user') {
+    if (group.message.uuid) return group.message.uuid
+    const stableKey = (group.message as unknown as Record<string, unknown>)._promaStableKey
+    if (typeof stableKey === 'string') return stableKey
+    // 没有 uuid：使用基于 message 对象引用的缓存 ID（message 引用在重渲染间稳定）
+    if (!messageIdCache.has(group.message)) {
+      messageIdCache.set(group.message, `user-${++fallbackIdCounter}`)
+    }
+    return messageIdCache.get(group.message)!
+  }
+  if (group.type === 'system') {
+    if (!messageIdCache.has(group.identityMessage)) {
+      messageIdCache.set(group.identityMessage, `system-${group.identityMessage.subtype ?? 'unknown'}-${++fallbackIdCounter}`)
+    }
+    return messageIdCache.get(group.identityMessage)!
+  }
+  // assistant-turn：优先使用模型 message ID。partial 与 final 的 Runtime UUID 不同，
+  // 但模型 message ID 相同，可避免终态替换时 React key 改变导致折叠状态重置。
+  const first = group.assistantMessages[0]
+  const modelMessageId = first ? getAssistantModelMessageId(first) : undefined
+  if (modelMessageId) return `assistant-message-${modelMessageId}`
+  if (first?.uuid) return first.uuid
+  const stableKey = first ? (first as unknown as Record<string, unknown>)._promaStableKey : undefined
+  if (typeof stableKey === 'string') return stableKey
+  // 没有 uuid：使用基于首条 assistant message 对象引用的缓存 ID
+  if (first) {
+    if (!messageIdCache.has(first)) {
+      messageIdCache.set(first, `turn-${++fallbackIdCounter}`)
+    }
+    return messageIdCache.get(first)!
+  }
+  // 仅含 interrupted result 的停止占位 turn：用 result 时间戳/耗时稳定 key
+  const stopResult = group.turnMessages.find((message) => message.type === 'result')
+  if (stopResult) {
+    const raw = stopResult as Record<string, unknown>
+    const createdAt = typeof raw._createdAt === 'number' ? raw._createdAt : 'na'
+    const duration = typeof raw._durationMs === 'number' ? raw._durationMs : 'na'
+    return `turn-stopped-${createdAt}-${duration}`
+  }
+  // 极端情况：空 turn
+  return `turn-empty-${++fallbackIdCounter}`
+}
+
+// getGroupPreview 已迁移至 @proma/session-core（本文件从该包 import 并 re-export）
+
+export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId, fullTranscript, hideFinalItems, isLatestAssistantTurn, backgroundWaiting, pendingUserMessage, suppressWaitingFeedback, compactionStatusOverride, runningStartedAt, fallbackDurationMs }: MessageGroupRendererProps): React.ReactElement | null {
+  const groupId = getGroupId(group)
+
+  if (group.type === 'user') {
+    const rewindTargetUuid = findRewindTargetBeforeUser(allMessages, group.message)
+    return (
+      <div data-message-id={groupId} data-message-role="user">
+        <UserInputMessage
+          message={group.message}
+          pending={pendingUserMessage}
+          sessionId={sessionId}
+          onFork={onFork}
+          onRewind={onRewind}
+          rewindTargetUuid={rewindTargetUuid}
+        />
+      </div>
+    )
+  }
+
+  if (group.type === 'system') {
+    const subtype = group.message.subtype
+    if (getSDKCompactStatus(group.message)) {
+      return (
+        <div data-message-id={groupId}>
+          <CompactStatusNotice
+            message={group.message}
+            statusOverride={compactionStatusOverride}
+          />
+        </div>
+      )
+    }
+    if (subtype === 'permission_denied') return <div data-message-id={groupId}><PermissionDeniedNotice message={group.message} /></div>
+    if (subtype === 'auto_mode_classifier') {
+      return <div data-message-id={groupId}><AutoModeClassifierNotice message={group.message} /></div>
+    }
+    if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
+      return <div data-message-id={groupId}><HookLifecycleNotice message={group.message} /></div>
+    }
+    return null
+  }
+
+  // assistant-turn
+  return (
+    <div data-message-id={groupId} data-message-role="assistant">
+      <AssistantTurnRenderer
+        turn={group}
+        allMessages={allMessages}
+        basePath={basePath}
+        onFork={onFork}
+        onRetry={onRetry}
+        onRetryInNewSession={onRetryInNewSession}
+        onCompact={onCompact}
+        isStreaming={isStreaming}
+        stoppedByUser={stoppedByUser}
+        sessionModelId={sessionModelId}
+        sessionId={sessionId}
+        turnId={groupId}
+        fullTranscript={fullTranscript}
+        hideFinalItems={hideFinalItems}
+        isLatestAssistantTurn={isLatestAssistantTurn}
+        backgroundWaiting={backgroundWaiting}
+        suppressWaitingFeedback={suppressWaitingFeedback}
+        runningStartedAt={runningStartedAt}
+        fallbackDurationMs={fallbackDurationMs}
+      />
+    </div>
+  )
+}

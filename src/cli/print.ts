@@ -1,7 +1,9 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { hostToolDenial } from '../utils/permissions/hostToolPolicy.js'
+import { TranscriptSnapshot } from '../entrypoints/sdk/transcriptSnapshot.js'
 import { feature } from 'bun:bundle'
 import { readFile, stat } from 'fs/promises'
-import { dirname } from 'path'
+import { dirname, resolve } from 'path'
 import {
   downloadUserSettings,
   redownloadUserSettings,
@@ -178,6 +180,7 @@ import {
   getAutoModeUnavailableReason,
   isBypassPermissionsModeDisabled,
   transitionPermissionMode,
+  verifyAutoModeGateAccess,
 } from 'src/utils/permissions/permissionSetup.js'
 import {
   tryGenerateSuggestion,
@@ -254,6 +257,7 @@ import {
 } from 'src/services/api/grove.js'
 import {
   toInternalMessages,
+  toSDKMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
 import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
@@ -278,6 +282,11 @@ import {
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
+import {
+  getSessionAutoCompactOverride,
+  isAutoCompactEnabled,
+  setSessionAutoCompactOverride,
+} from 'src/services/compact/autoCompact.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
   getSessionId,
@@ -291,6 +300,7 @@ import {
   getMainThreadAgentType,
   getAllowedChannels,
   setAllowedChannels,
+  setAdditionalSkillDirectories,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
@@ -356,6 +366,12 @@ import { unassignTeammateTasks } from '../utils/tasks.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
+import {
+  getSdkSubagentTranscript,
+  getSdkTaskOutput,
+  getSdkTaskSnapshots,
+  persistSdkTaskOwnership,
+} from '../tasks/sdkTaskControls.js'
 import { drainSdkEvents } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
@@ -490,6 +506,7 @@ export async function runHeadless(
     agent: string | undefined
     workload: string | undefined
     setupTrigger?: 'init' | 'maintenance' | undefined
+    catalogOnly?: boolean
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
     setSDKStatus?: (status: SDKStatus) => void
   },
@@ -704,6 +721,7 @@ export async function runHeadless(
     forkSession: options.forkSession,
     outputFormat: options.outputFormat,
     sessionStartHooksPromise: options.sessionStartHooksPromise,
+    catalogOnly: options.catalogOnly,
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
 
@@ -888,6 +906,15 @@ export async function runHeadless(
     options,
     turnInterruptionState,
   )) {
+    if (
+      message.type === 'system' &&
+      ['task_started', 'task_progress', 'task_notification'].includes(
+        String(message.subtype),
+      )
+    ) {
+      // 在任务事件发布给桌面前保存会话所有权，重启后只允许读取本会话任务。
+      persistSdkTaskOwnership(getAppState())
+    }
     if (transformToStreamlined) {
       // Streamlined mode: transform messages and stream immediately
       const transformed = transformToStreamlined(message)
@@ -1028,6 +1055,7 @@ function runHeadlessStreaming(
     setSDKStatus?: (status: SDKStatus) => void
     promptSuggestions?: boolean | undefined
     workload?: string | undefined
+    catalogOnly?: boolean
   },
   turnInterruptionState?: TurnInterruptionState,
 ): AsyncIterable<StdoutMessage> {
@@ -1166,6 +1194,7 @@ function runHeadlessStreaming(
   // Messages for internal tracking, directly mutated by ask(). These messages
   // include Assistant, User, Attachment, and Progress messages.
   // TODO: Clean up this code to avoid passing around a mutable array.
+  const transcriptSnapshot = new TranscriptSnapshot()
   const mutableMessages: Message[] = initialMessages
 
   // Seed the readFileState cache from the transcript (content the model saw,
@@ -1860,6 +1889,24 @@ function runHeadlessStreaming(
       currentCommands = newCommands
     })
   })
+
+  const refreshSkillDirectories = async (
+    directories: string[],
+  ): Promise<string[]> => {
+    const normalizedDirectories = [
+      ...new Set(
+        directories
+          .map(directory => directory.trim())
+          .filter(Boolean)
+          .map(directory => resolve(cwd(), directory)),
+      ),
+    ]
+    setAdditionalSkillDirectories(normalizedDirectories)
+    clearCommandsCache()
+    await skillChangeDetector.refreshWatchPaths()
+    currentCommands = await getCommands(cwd())
+    return normalizedDirectories
+  }
 
   // Proactive mode: schedule a tick to keep the model looping autonomously.
   // setTimeout(0) yields to the event loop so pending stdin messages
@@ -3033,6 +3080,18 @@ function runHeadlessStreaming(
         // The schema union doesn't include end_session, channel_enable, mcp_authenticate,
         // claude_authenticate, etc. so accessing their properties narrows to `never`.
         const req = msg.request as Record<string, unknown>
+        if (
+          options.catalogOnly &&
+          !['initialize', 'set_skill_directories', 'end_session'].includes(
+            String(req.subtype),
+          )
+        ) {
+          sendControlResponseError(
+            msg,
+            'Catalog-only processes cannot execute runtime controls',
+          )
+          continue
+        }
         if (msg.request.subtype === 'interrupt') {
           // Track escapes for attribution (ant-only feature)
           if (feature('COMMIT_ATTRIBUTION')) {
@@ -3066,6 +3125,11 @@ function runHeadlessStreaming(
           sendControlResponseSuccess(msg)
           break // exits for-await → falls through to inputClosed=true drain below
         } else if (msg.request.subtype === 'initialize') {
+          if (msg.request.additionalSkillDirectories !== undefined) {
+            await refreshSkillDirectories(
+              msg.request.additionalSkillDirectories,
+            )
+          }
           // SDK MCP server names from the initialize message
           // Populated by both browser and ProcessTransport sessions
           if (
@@ -3087,7 +3151,7 @@ function runHeadlessStreaming(
             msg.request_id,
             initialized,
             output,
-            commands,
+            currentCommands,
             modelInfos,
             structuredIO,
             !!options.enableAuthStatus,
@@ -3146,6 +3210,20 @@ function runHeadlessStreaming(
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
+          if (feature('TRANSCRIPT_CLASSIFIER')) {
+            const currentState = getAppState()
+            const gateCheck = await verifyAutoModeGateAccess(
+              currentState.toolPermissionContext,
+              currentState.fastMode,
+            )
+            setAppState(prev => ({
+              ...prev,
+              toolPermissionContext: gateCheck.updateContext(
+                prev.toolPermissionContext,
+              ),
+            }))
+          }
+
           sendControlResponseSuccess(msg)
         } else if (msg.request.subtype === 'set_max_thinking_tokens') {
           if (msg.request.max_thinking_tokens === null) {
@@ -3159,6 +3237,28 @@ function runHeadlessStreaming(
             }
           }
           sendControlResponseSuccess(msg)
+        } else if (msg.request.subtype === 'set_effort') {
+          const model = getMainLoopModel()
+          if (msg.request.effort !== null && !modelSupportsEffort(model)) {
+            sendControlResponseError(
+              msg,
+              `Cannot set effort because model ${model} does not support it`,
+            )
+          } else {
+            const effortOverride = msg.request.effort ?? undefined
+            setAppState(prev => ({ ...prev, effortValue: effortOverride }))
+            const applied = resolveAppliedEffort(model, effortOverride)
+            sendControlResponseSuccess(msg, {
+              override: msg.request.effort,
+              applied: typeof applied === 'string' ? applied : null,
+            })
+          }
+        } else if (msg.request.subtype === 'set_auto_compact') {
+          setSessionAutoCompactOverride(msg.request.enabled ?? undefined)
+          sendControlResponseSuccess(msg, {
+            enabled: isAutoCompactEnabled(),
+            override: getSessionAutoCompactOverride() ?? null,
+          })
         } else if (msg.request.subtype === 'mcp_status') {
           sendControlResponseSuccess(msg, {
             mcpServers: buildMcpServerStatuses(),
@@ -3338,6 +3438,24 @@ function runHeadlessStreaming(
                 buildMcpServerStatuses() as SDKControlReloadPluginsResponse['mcpServers'],
               error_count: r.error_count,
             } satisfies SDKControlReloadPluginsResponse)
+          } catch (error) {
+            sendControlResponseError(msg, errorMessage(error))
+          }
+        } else if (msg.request.subtype === 'set_skill_directories') {
+          try {
+            const directories = await refreshSkillDirectories(
+              msg.request.directories,
+            )
+            sendControlResponseSuccess(msg, {
+              directories,
+              commands: currentCommands
+                .filter(cmd => cmd.userInvocable !== false)
+                .map(cmd => ({
+                  name: getCommandName(cmd),
+                  description: formatDescriptionWithSource(cmd),
+                  argumentHint: cmd.argumentHint || '',
+                })),
+            })
           } catch (error) {
             sendControlResponseError(msg, errorMessage(error))
           }
@@ -3985,11 +4103,68 @@ function runHeadlessStreaming(
         } else if (msg.request.subtype === 'stop_task') {
           const { task_id: taskId } = msg.request
           try {
-            await stopTask(taskId, {
+            const result = await stopTask(taskId, {
               getAppState,
               setAppState,
             })
-            sendControlResponseSuccess(msg, {})
+            const task = (await getSdkTaskSnapshots(getAppState(), taskId))
+              .tasks[0]
+            sendControlResponseSuccess(msg, {
+              stopped: true,
+              result: {
+                task_id: result.taskId,
+                task_type: result.taskType,
+                status: task?.status ?? 'killed',
+                ...(result.command ? { command: result.command } : {}),
+              },
+              ...(task ? { task } : {}),
+            })
+          } catch (error) {
+            sendControlResponseError(msg, errorMessage(error))
+          }
+        } else if (msg.request.subtype === 'get_tasks') {
+          try {
+            sendControlResponseSuccess(msg, {
+              ...(await getSdkTaskSnapshots(
+                getAppState(),
+                msg.request.task_id,
+              )),
+            })
+          } catch (error) {
+            sendControlResponseError(msg, errorMessage(error))
+          }
+        } else if (msg.request.subtype === 'get_task_output') {
+          try {
+            sendControlResponseSuccess(msg, {
+              ...(await getSdkTaskOutput(
+                getAppState(),
+                msg.request.task_id,
+                msg.request.cursor,
+                msg.request.byte_limit,
+              )),
+            })
+          } catch (error) {
+            sendControlResponseError(msg, errorMessage(error))
+          }
+        } else if (msg.request.subtype === 'get_session_transcript') {
+          try {
+            sendControlResponseSuccess(
+              msg,
+              transcriptSnapshot.read(msg.request, () =>
+                toSDKMessages(mutableMessages),
+              ),
+            )
+          } catch (error) {
+            sendControlResponseError(msg, errorMessage(error))
+          }
+        } else if (msg.request.subtype === 'get_subagent_transcript') {
+          try {
+            sendControlResponseSuccess(msg, {
+              ...(await getSdkSubagentTranscript(
+                getAppState(),
+                msg.request.task_id,
+              )),
+            })
           } catch (error) {
             sendControlResponseError(msg, errorMessage(error))
           }
@@ -4266,7 +4441,7 @@ function runHeadlessStreaming(
       }
       // After handling control, keep-alive, env-var, assistant, and system
       // messages above, only user messages should remain.
-      if (message.type !== 'user') {
+      if (message.type !== 'user' || options.catalogOnly) {
         continue
       }
       // Type assertion: after the type guard, message is a user message.
@@ -4380,6 +4555,7 @@ export function createCanUseToolWithPermissionPrompt(
     forceDecision,
   ) => {
     const mainPermissionResult =
+      hostToolDenial(tool) ??
       forceDecision ??
       (await hasPermissionsToUseTool(
         tool,
@@ -4504,6 +4680,7 @@ export function getCanUseToolFn(
       toolUseId,
       forceDecision,
     ) =>
+      hostToolDenial(tool) ??
       forceDecision ??
       (await hasPermissionsToUseTool(
         tool,
@@ -4835,23 +5012,33 @@ function handleSetPermissionMode(
   }
 
   // Check if trying to switch to auto mode without the classifier gate
-  if (
-    feature('TRANSCRIPT_CLASSIFIER') &&
-    request.mode === 'auto' &&
-    !isAutoModeGateEnabled()
-  ) {
-    const reason = getAutoModeUnavailableReason()
-    output.enqueue({
-      type: 'control_response',
-      response: {
-        subtype: 'error',
-        request_id: requestId,
-        error: reason
-          ? `Cannot set permission mode to auto: ${getAutoModeUnavailableNotification(reason)}`
-          : 'Cannot set permission mode to auto',
-      },
-    })
-    return toolPermissionContext
+  if (request.mode === 'auto') {
+    if (!feature('TRANSCRIPT_CLASSIFIER')) {
+      output.enqueue({
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: requestId,
+          error:
+            'Cannot set permission mode to auto because the classifier is unavailable',
+        },
+      })
+      return toolPermissionContext
+    }
+    if (!isAutoModeGateEnabled()) {
+      const reason = getAutoModeUnavailableReason()
+      output.enqueue({
+        type: 'control_response',
+        response: {
+          subtype: 'error',
+          request_id: requestId,
+          error: reason
+            ? `Cannot set permission mode to auto: ${getAutoModeUnavailableNotification(reason)}`
+            : 'Cannot set permission mode to auto',
+        },
+      })
+      return toolPermissionContext
+    }
   }
 
   // Allow the mode switch
@@ -5137,10 +5324,12 @@ async function loadInitialMessages(
     resumeSessionAt: string | undefined
     forkSession: boolean | undefined
     outputFormat: string | undefined
+    catalogOnly?: boolean
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
     restoredWorkerState: Promise<SessionExternalMetadata | null>
   },
 ): Promise<LoadInitialMessagesResult> {
+  if (options.catalogOnly) return { messages: [] }
   const persistSession = !isSessionPersistenceDisabled()
   // Handle continue in print mode
   if (options.continue) {

@@ -1,0 +1,128 @@
+# Xcodes
+
+<img src="./apps/electron/resources/icon.svg" alt="Xcodes 图标" width="96" />
+
+Xcodes 是本地优先的 Electron AI 桌面应用。桌面基础来自 [Proma](https://github.com/proma-ai/Proma)，当前正在同仓接入自有 Claude Code CLI，重做执行、审批、计划、后台任务和桌面交互。新产品名未确定前使用 Xcodes，保留上游版权与许可证。
+
+**当前为重做中的开发版本。** 各功能、真实 CLI、视觉和安装包的通过范围分别记录在 [实施状态](./docs/reference/desktop-rebuild-implementation-status.md) 与 [逐入口验收台账](./docs/reference/desktop-entrypoint-acceptance.md)。历史发行版和历史截图不代表此内核已经交付；不能用目录包构建成功代替三个平台的运行验收。
+
+## 运行架构
+
+```text
+Electron Renderer（React / Jotai）
+    ↕ typed preload / IPC
+Electron Main（配置、显示历史、统计、调度、系统工具）
+    ↕ 鉴权 loopback HTTP / WebSocket
+独立 Local Service（会话进程、事件顺序、快照、重连）
+    ↕ stdio NDJSON / control
+自有 CLI（每个活跃会话独立进程）
+```
+
+CLI 负责模型循环、原生权限、工具、计划、子代理、后台任务和原生 transcript。桌面不建立第二套 Agent 循环。旧 Hermes 任务图仅供历史读取；Pi 不在正式执行路径中。
+
+- Chat、Code、应用定时任务、外部消息和辅助模型调用统一接入 Local CLI。
+- 仅执行本机 Local / worktree。应用打开期间支持后台和定时任务，退出时有序结束受管进程，没有常驻 daemon。
+- Main 托管的浏览器等内置工具转换为鉴权 HTTP MCP endpoint 后交给 CLI；进程内函数不能直接放入 CLI JSON 配置。
+- 模型渠道的 provider 是协议来源，不能根据模型名、URL 或密钥猜测协议。模型能力和权限模式失败必须明确显示，不把 Auto 静默改为 Bypass。
+
+## 桌面行为
+
+- Manual、Accept edits、Bypass、Plan、dontAsk、Auto 六种模式；Auto 是否可用取决于真实内核及模型能力。
+- 消息、thinking、工具输入输出、计划和任务根据原生事件展示，不生成虚构思考或工具结果。
+- 文件、终端、改动、Plan、后台任务使用独立右侧面板。Plan 与任务可上下同时显示；面板关闭不终止执行，切换会话默认收起面板。
+- 每会话独立终端与工作目录。worktree 首次发送前准备，失败保留草稿，不回退到错误目录。
+- `/` 同时提供原生命令和 Skills。PR / 提交下拉只选择操作，点击主按钮才发送。
+- JSON / JSONL 显示投影、上下文、压缩及用量账本与 CLI 原生历史分开保存。
+
+具体覆盖和尚未验证的场景以验收台账为准。
+
+## 工程与开发
+
+```text
+claude-code/                 # CLI 根工程、独立锁文件
+  src/
+  desktop/                   # 桌面工程、独立锁文件与依赖
+    apps/electron/
+    apps/local-service/
+    packages/desktop-protocol/
+    packages/shared/
+    packages/session-core/
+    packages/core/
+    packages/ui/
+```
+
+在 CLI 根目录使用统一入口：
+
+```bash
+bun run build
+bun run desktop:check
+bun run desktop:dev
+bun run desktop:build
+```
+
+在 `desktop/` 中：
+
+```bash
+bun install --frozen-lockfile
+bun run typecheck
+bun run dev
+bun run electron:build
+```
+
+原桌面源码目录保留作为迁移来源。在同仓结构外开发时，显式设置 `XCODES_CLI_SOURCE_ROOT` 指向自有 CLI 根目录；正式包只读取包内资源，不访问开发机源码。
+
+测试必须使用新的 `XCODES_DATA_ROOT`、隔离 HOME 与临时 Git 项目。跨进程测试使用 fake Provider / fake CLI 或自有 CLI 的本地 fixture，不向真实联系人试发消息，不在业务项目测试写入。
+
+## 数据和历史
+
+默认开发数据位于 `~/xcodes-dev/`，正式数据位于 `~/xcodes/`；`XCODES_DATA_ROOT` 可显式指定独立绝对路径。数据格式通过 `desktop-data-format.json` 标记。
+
+旧 `.proma` 数据采用副本迁移，保留原目录。复制或目标目录校验失败会停止启动，不能回退旧目录继续写入。旧显示历史转入新 CLI 时作为明确标注的参考上下文，不伪造原生 resume，不重放旧工具和批准。
+
+渠道凭据由 Electron safeStorage 保护；不将密钥、正文或 thinking 输出到诊断日志。会话索引和配置使用 JSON，历史使用 JSONL，不依赖本地数据库。
+
+## 构建与安装包
+
+`bun run electron:build` 构建 Main、Preload、Renderer、本地服务、固定版本 CLI 和资源。安装包携带 Bun、完整 CLI chunks、会话辅助 CLI 与 native addons；开发机已有 Node/Bun 不能作为包可运行的前提。
+
+```bash
+cd apps/electron
+bun run dist:mac
+bun run dist:win
+```
+
+macOS arm64、macOS x64 和 Windows x64 必须分别验证运行、审批、任务、worktree、恢复和退出。跨架构目录包的静态资源检查不等于在目标平台执行通过；签名、公证、更新源和正式发行结果单独记录。
+
+## 贡献
+
+欢迎修 Bug、补文档、加测试、完善体验，也欢迎围绕真实场景提交新的 Skills、MCP 配置或 Agent 工作流。
+
+提交 PR 前建议先确认：
+
+- 使用 Bun 运行脚本，不混用 npm / pnpm lockfile。
+- 状态管理使用 Jotai。
+- 尽量保持本地优先，优先使用配置文件和 JSON / JSONL。
+- TypeScript 不使用 `any`，对象结构优先使用 `interface`。
+- 新增 IPC 时同步修改 shared 类型、main handler、preload bridge 和 renderer 调用。
+- 影响包行为时递增对应 package 的 patch 版本。
+- 能用测试覆盖的行为尽量补上测试，尤其是共享逻辑、IPC 契约和持久化格式。
+
+## 维护与原作者
+
+- 历史桌面维护仓库：[maochiy/Xcode](https://github.com/maochiy/Xcode)。
+- Proma 原作者：Erlich Liu（[个人网站](https://erlich.fun)）及 [Proma 社区贡献者](https://github.com/proma-ai/Proma/graphs/contributors)。
+
+## 致谢
+
+- [Proma](https://github.com/proma-ai/Proma)：本项目二次开发的代码基础，感谢原作者及所有贡献者。
+- [Shiki](https://shiki.style/)：代码高亮。
+- [Beautiful Mermaid](https://github.com/lukilabs/beautiful-mermaid) 与 [Mermaid](https://mermaid.js.org/)：Mermaid 图表渲染与官方兜底渲染。
+- [Cherry Studio](https://github.com/CherryHQ/cherry-studio)：多供应商桌面 AI 产品启发。
+- [Lobe Icons](https://github.com/lobehub/lobe-icons)：AI / LLM 品牌图标。
+- [Craft Agents OSS](https://github.com/lukilabs/craft-agents-oss)：Agent SDK 集成模式参考。
+
+## 许可证
+
+Xcodes 基于 Proma 开源版本继续开发，沿用 [GNU Affero General Public License v3.0（AGPL-3.0）](./LICENSE)。原项目版权与许可证声明予以保留，完整条款以根目录 `LICENSE` 文件为准。
+
+本项目不代表 Proma 原作者提供商业授权，也不因更名而改变上游代码的许可证。

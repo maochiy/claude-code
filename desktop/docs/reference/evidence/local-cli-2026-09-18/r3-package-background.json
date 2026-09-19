@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-18T07:31:22.632Z",
+  "result": "passed",
+  "packageApp": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app",
+  "runtime": {
+    "bunPath": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/vendor/bun/bun",
+    "serviceEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/service/index.js",
+    "cliEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/cli/cli-bun.js"
+  },
+  "providerRequestCount": 3,
+  "foreground": {
+    "runId": "366f1089-a0b5-4176-8c04-fbd278935d40",
+    "completedAt": 1789716673387,
+    "latencyMs": 96,
+    "taskAStatusAfterForeground": "running",
+    "taskBStatusAfterForeground": "running"
+  },
+  "taskA": {
+    "taskId": "beix4e6in",
+    "description": "隔离后台任务 A（待停止）",
+    "initialStatus": "running",
+    "initialOutput": "TASK_A_START\n",
+    "initialCursor": 0,
+    "initialNextCursor": 13,
+    "stopSettled": true,
+    "stopLatencyMs": 27,
+    "statusAfterStop": "killed",
+    "finalStatus": "killed",
+    "finalTail": "",
+    "markerCreated": false
+  },
+  "taskB": {
+    "taskId": "bur8bae48",
+    "description": "隔离后台任务 B（继续完成）",
+    "initialStatus": "running",
+    "initialOutput": "TASK_B_START\n",
+    "cursorPages": [
+      {
+        "cursor": 0,
+        "nextCursor": 13,
+        "content": "TASK_B_START\n"
+      },
+      {
+        "cursor": 13,
+        "nextCursor": 27,
+        "content": "TASK_B_MIDDLE\n"
+      },
+      {
+        "cursor": 27,
+        "nextCursor": 41,
+        "content": "TASK_B_FINISH\n"
+      }
+    ],
+    "statusAfterAStop": "running",
+    "finalStatus": "completed",
+    "markerCreated": true
+  },
+  "cleanup": {
+    "servicePid": 53059,
+    "cliPid": 53060,
+    "serviceExitCode": 0,
+    "serviceExitSignal": "none",
+    "serviceAliveAfterExit": false,
+    "cliAliveAfterExit": false
+  }
+}

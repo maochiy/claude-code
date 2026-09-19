@@ -1,0 +1,361 @@
+import { describe, expect, test } from 'bun:test'
+import { createStore, Provider } from 'jotai'
+import { renderToStaticMarkup } from 'react-dom/server'
+import type {
+  SDKThinkingBlock,
+  SDKMessage,
+  SDKToolUseBlock,
+} from '@proma/shared'
+import { agentRuntimeExecutionGraphsAtom, backgroundTasksAtomFamily } from '@/atoms/agent-atoms'
+import { agentTimelineExpandedAtom } from '@/atoms/agent-timeline-atoms'
+import { ContentBlock } from './ContentBlock'
+
+describe('ContentBlock Collaboration 结果摘要', () => {
+  test('Given 已完成 thinking 活动 When 渲染 Then 显示默认收起的已思考入口', () => {
+    const block: SDKThinkingBlock = {
+      type: 'thinking',
+      thinking: '正在核对登录流程。',
+    }
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock block={block} allMessages={[]} />
+      </Provider>,
+    )
+
+    expect(html).toContain('data-agent-timeline-entry="thinking"')
+    // 内容派生标签直接显示思考首行；正文仍默认收起
+    expect(html).toContain('正在核对登录流程。')
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('data-agent-thinking-content')
+  })
+
+  test('Given 运行中 thinking 已有内容 When 尚未点击 Then 显示内容派生标签的收起入口', () => {
+    const block: SDKThinkingBlock = {
+      type: 'thinking',
+      thinking: '正在核对登录流程。',
+    }
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={[]}
+          activityRunning
+          activityItem
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('data-agent-timeline-entry="thinking"')
+    // 标签为内容派生摘要（运行中 shimmer）；正文默认收起，与时间线 thinking 行为一致
+    expect(html.match(/正在核对登录流程/g)).toHaveLength(1)
+    expect(html).toContain('text-muted-foreground')
+    expect(html).toContain('role="status"')
+    expect(html).toContain('agent-status-shimmer')
+    expect(html).toContain('aria-expanded="false"')
+    expect(html).not.toContain('data-agent-thinking-content')
+  })
+
+  test('Given 运行中 thinking 尚无内容 When 渲染 Then 只显示一个无折叠按钮的正在思考状态', () => {
+    const block: SDKThinkingBlock = {
+      type: 'thinking',
+      thinking: '',
+    }
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={[]}
+          activityRunning
+          activityItem
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('role="status"')
+    expect(html.match(/正在思考/g)).toHaveLength(1)
+    expect(html).toContain('agent-status-shimmer')
+    expect(html).not.toContain('<button')
+    expect(html).not.toContain('aria-expanded')
+    expect(html).not.toContain('data-agent-timeline-entry')
+    expect(html).not.toContain('data-agent-thinking-content')
+  })
+
+  test('Given 普通工具阶段行 When 渲染 Then 使用纯淡入入场动画', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool-read-1',
+      name: 'Read',
+      input: { file_path: '/tmp/demo.ts' },
+    }
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={[]}
+          activityRunning
+          activityItem
+          isStreaming
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('data-agent-activity="tool"')
+    expect(html).toContain('agent-activity-fade-in')
+    expect(html).toContain('agent-status-shimmer')
+    expect(html).not.toContain('agent-activity-enter')
+  })
+
+  test('Given 工具关联运行中的后台任务 When 渲染活动行 Then 提供蓝色实时输出入口', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use', id: 'background-shell-tool', name: 'Bash', input: { command: 'bun test' },
+    }
+    const store = createStore()
+    store.set(backgroundTasksAtomFamily('background-session'), [{
+      id: 'background-shell', type: 'shell', toolUseId: block.id,
+      startTime: Date.now(), elapsedSeconds: 2, status: 'running', command: 'bun test',
+    }])
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <ContentBlock block={block} allMessages={[]} sessionId="background-session" isStreaming activityRunning />
+      </Provider>,
+    )
+
+    expect(html).toContain('data-agent-live-output="true"')
+    expect(html).toContain('查看实时输出')
+    expect(html).toContain('text-blue-600')
+  })
+
+  test('Given 工具调用已经返回结果 When 渲染最新工具 Then 不再显示运行中的白色波纹', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'tool-read-completed',
+      name: 'Read',
+      input: { file_path: '/tmp/completed.ts' },
+    }
+    const messages: SDKMessage[] = [{
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: '读取完成',
+        }],
+      },
+    }]
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={messages}
+          activityRunning={false}
+          activityItem
+          isStreaming
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('data-agent-activity="tool"')
+    expect(html).not.toContain('agent-status-shimmer')
+  })
+
+  test('Given Pi 原生 read 与 bash 工具 When 渲染活动详情 Then 使用标准工具语义展示参数', () => {
+    const readBlock: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'pi-read',
+      name: 'read',
+      input: { path: '/tmp/pi-native.ts', offset: 10, limit: 20 },
+    }
+    const bashBlock: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'pi-bash',
+      name: 'bash',
+      input: { command: 'bun test SDKMessageRenderer.test.tsx' },
+    }
+    const readHtml = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock block={readBlock} allMessages={[]} activityItem />
+      </Provider>,
+    )
+    const bashHtml = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock block={bashBlock} allMessages={[]} activityItem />
+      </Provider>,
+    )
+
+    expect(readHtml).toContain('读取了 pi-native.ts 第 10-30 行')
+    expect(readHtml).toContain('data-agent-activity="tool"')
+    expect(bashHtml).toContain('运行了 bun test SDKMessageRenderer.test.tsx')
+    expect(bashHtml).toContain('data-agent-activity="tool"')
+  })
+
+  test('Given list_delegations 返回完整委派数据 When 渲染正文 Then 只显示一句状态摘要', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'list-delegations',
+      name: 'mcp__collaboration__list_delegations',
+      input: {},
+    }
+    const messages: SDKMessage[] = [{
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify({
+            maxRunningDelegations: 50,
+            runningCount: 1,
+            delegations: [
+              {
+                title: '节点一',
+                status: 'completed',
+                goal: '不应显示的完整任务说明',
+                resultSummary: '不应显示的完整执行结果',
+              },
+              {
+                title: '节点二',
+                status: 'running',
+              },
+            ],
+          }),
+        }],
+      },
+    }]
+
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={messages}
+          sessionId="parent-session"
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('共 2 个委派：1 个已完成，1 个执行中')
+    expect(html).not.toContain('不应显示的完整任务说明')
+    expect(html).not.toContain('不应显示的完整执行结果')
+  })
+
+  test('Given 并行批次中的兄弟工具先失败 When 当前工具收到级联取消 Then 显示已取消而非真实执行错误', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'cancelled-bash',
+      name: 'Bash',
+      input: {
+        command: 'adb shell run-as com.zmn.expert.android ...',
+        description: '检查绑定账户状态',
+      },
+    }
+    const messages: SDKMessage[] = [{
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: '<tool_use_error>Cancelled: parallel tool call Bash(adb devices -l …) errored</tool_use_error>',
+          is_error: true,
+        }],
+      },
+    }]
+
+    const html = renderToStaticMarkup(
+      <Provider store={createStore()}>
+        <ContentBlock
+          block={block}
+          allMessages={messages}
+        />
+      </Provider>,
+    )
+
+    expect(html).toContain('命令已停止')
+    expect(html).toContain('text-muted-foreground/45')
+    expect(html).not.toContain('text-destructive/70')
+  })
+
+  test('Given 命令结果已返回且用户展开 When 渲染 Then 同时显示真实命令与完整输出', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'bash-with-output',
+      name: 'Bash',
+      input: { command: 'bun test important.test.ts' },
+    }
+    const messages: SDKMessage[] = [{
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: '2 pass\n0 fail',
+        }],
+      },
+    }]
+    const store = createStore()
+    store.set(agentTimelineExpandedAtom, new Map([['session-a/tool-result/bash-with-output', true]]))
+
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <ContentBlock block={block} allMessages={messages} sessionId="session-a" activityItem />
+      </Provider>,
+    )
+
+    expect(html).toContain('aria-expanded="true"')
+    expect(html).toContain('bun test important.test.ts')
+    expect(html).toContain('2 pass')
+    expect(html).toContain('0 fail')
+  })
+
+  test('Given Agent 工具已经创建运行节点 When 流式渲染 Then 先显示已创建再按顺序显示子智能体运行状态', () => {
+    const block: SDKToolUseBlock = {
+      type: 'tool_use',
+      id: 'agent-tool-1',
+      name: 'Agent',
+      input: {
+        name: 'Explore',
+        prompt: '检查登录流程',
+      },
+    }
+    const store = createStore()
+    store.set(agentRuntimeExecutionGraphsAtom, new Map([[
+      'parent-session',
+      {
+        runtimeSessionId: 'runtime-session',
+        nodes: [{
+          id: 'runtime-agent-1',
+          kind: 'subagent',
+          name: 'Explore',
+          description: '检查登录流程',
+          status: 'running',
+          toolUseId: block.id,
+          transcriptAvailable: true,
+          model: 'test-model',
+        }],
+        todos: [],
+        updatedAt: Date.now(),
+      },
+    ]]))
+
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <ContentBlock
+          block={block}
+          allMessages={[]}
+          sessionId="parent-session"
+          isStreaming
+          activityRunning
+        />
+      </Provider>,
+    )
+
+    const createdIndex = html.indexOf('已创建子智能体')
+    const agentIndex = html.indexOf('Explore')
+    const runningIndex = html.indexOf('正在运行')
+    expect(createdIndex).toBeGreaterThanOrEqual(0)
+    expect(agentIndex).toBeGreaterThan(createdIndex)
+    expect(runningIndex).toBeGreaterThan(agentIndex)
+    expect(html).not.toContain('正在调用子智能体')
+  })
+})

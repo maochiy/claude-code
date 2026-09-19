@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/assets/xcodes-icon.svg" />
+    <title>Xcodes</title>
+    <script>
+      // 主题初始化脚本（在 React 加载前执行，避免闪烁）
+      // 从 localStorage 缓存读取并迁移主题选择，立即应用 Cursor 主题类名
+      ;(function() {
+        var mode = 'dark'
+        var style = 'default'
+        var html = document.documentElement
+        var validStyles = [
+          'cursor-dark',
+          'cursor-light',
+          'cursor-midnight-dark',
+          'cursor-high-contrast-dark',
+          'cursor-colorblind-light'
+        ]
+        var legacyLightStyles = ['ocean-light', 'forest-light', 'slate-light']
+
+        try {
+          mode = localStorage.getItem('proma-theme-mode') || 'dark'
+          style = localStorage.getItem('proma-theme-style') || 'default'
+        } catch {
+          // localStorage 不可用时使用 Cursor Dark
+        }
+
+        if (mode === 'special') {
+          if (validStyles.indexOf(style) === -1) {
+            mode = legacyLightStyles.indexOf(style) !== -1 ? 'light' : 'dark'
+            style = 'default'
+          }
+        } else if (mode === 'light' || mode === 'dark' || mode === 'system') {
+          style = 'default'
+        } else {
+          mode = 'dark'
+          style = 'default'
+        }
+
+        try {
+          localStorage.setItem('proma-theme-mode', mode)
+          localStorage.setItem('proma-theme-style', style)
+        } catch {
+          // localStorage 不可用时忽略
+        }
+
+        // 清理旧版及非法主题 class，保证重复执行结果一致。
+        Array.from(html.classList).forEach(function(className) {
+          if (className.indexOf('theme-') === 0) {
+            html.classList.remove(className)
+          }
+        })
+        html.classList.remove('dark')
+
+        if (mode === 'special') {
+          html.classList.add('theme-' + style)
+          if (!style.endsWith('-light')) {
+            html.classList.add('dark')
+          }
+        } else if (mode === 'dark') {
+          html.classList.add('dark')
+        } else if (mode === 'system') {
+          if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            html.classList.add('dark')
+          }
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/main.tsx"></script>
+  </body>
+</html>

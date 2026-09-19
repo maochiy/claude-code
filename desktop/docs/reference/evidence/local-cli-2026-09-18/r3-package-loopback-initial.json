@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-18T07:22:21.041Z",
+  "result": "passed",
+  "packageApp": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app",
+  "runtime": {
+    "bunPath": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/vendor/bun/bun",
+    "serviceEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/service/index.js",
+    "cliEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/cli/cli-bun.js"
+  },
+  "streaming": {
+    "sendCount": 1,
+    "providerRequestCount": 1,
+    "textDeltaCount": 3,
+    "firstTextLatencyMs": 273,
+    "terminalLatencyMs": 595,
+    "firstTextSeq": 12,
+    "terminalSeq": 21,
+    "firstTextBeforeTerminal": true
+  },
+  "readTool": {
+    "target": "/var/folders/rq/vmkb4phx4xdghf18387qj8540000gn/T/xcodes-r3-loopback-ioQFEP/workspace/isolated-read.txt",
+    "assistantCallCount": 1,
+    "providerRequestCount": 2,
+    "markerObservedInToolResult": true,
+    "pendingControlCount": 0,
+    "terminalLatencyMs": 777
+  },
+  "cleanup": {
+    "servicePid": 46091,
+    "cliPids": [
+      46111,
+      46156
+    ],
+    "serviceExitCode": 0,
+    "serviceExitSignal": "none",
+    "serviceAliveAfterExit": false,
+    "cliPidsAliveAfterExit": []
+  },
+  "reusableInteractionCoverage": [
+    "apps/local-service/test/native-interactions.integration.ts: ExitPlan feedback/revise/accept",
+    "apps/local-service/test/native-interactions.integration.ts: default permission deny/allow",
+    "apps/local-service/test/native-interactions.integration.ts: AskUser structured answer/cancel",
+    "apps/local-service/test/native-interactions.integration.ts: plan allow/deny"
+  ]
+}

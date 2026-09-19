@@ -65,11 +65,32 @@ type SessionStateChangedEvent = {
   state: 'idle' | 'running' | 'requires_action'
 }
 
+type AutoModeClassifierEvent = {
+  type: 'system'
+  subtype: 'auto_mode_classifier'
+  status: 'checking' | 'allowed' | 'blocked' | 'unavailable' | 'error'
+  call_id: string
+  usage_scope: 'classifier_call'
+  usage_included_in_result: false
+  tool_use_id: string
+  tool_name: string
+  model?: string
+  reason?: string
+  duration_ms?: number
+  usage?: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_input_tokens: number
+    cache_creation_input_tokens: number
+  }
+}
+
 export type SdkEvent =
   | TaskStartedEvent
   | TaskProgressEvent
   | TaskNotificationSdkEvent
   | SessionStateChangedEvent
+  | AutoModeClassifierEvent
 
 const MAX_QUEUE_SIZE = 1000
 const queue: SdkEvent[] = []
@@ -130,5 +151,15 @@ export function emitTaskTerminatedSdk(
     output_file: opts?.outputFile ?? '',
     summary: opts?.summary ?? '',
     usage: opts?.usage,
+  })
+}
+
+export function emitAutoModeClassifierSdk(
+  event: Omit<AutoModeClassifierEvent, 'type' | 'subtype'>,
+): void {
+  enqueueSdkEvent({
+    type: 'system',
+    subtype: 'auto_mode_classifier',
+    ...event,
   })
 }

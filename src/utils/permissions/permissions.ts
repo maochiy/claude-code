@@ -1,5 +1,7 @@
+import { hostToolDenial } from './hostToolPolicy.js'
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { randomUUID } from 'crypto'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   getToolNameForPermissionCheck,
@@ -89,6 +91,7 @@ import {
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
+import { emitAutoModeClassifierSdk } from '../sdkEventQueue.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../slowOperations.js'
 import {
@@ -477,6 +480,8 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   assistantMessage,
   toolUseID,
 ): Promise<PermissionDecision> => {
+  const hostDenial = hostToolDenial(tool)
+  if (hostDenial) return hostDenial
   const result = await hasPermissionsToUseToolInner(tool, input, context)
 
   // Reset consecutive denials on any allowed tool use in auto mode.
@@ -686,7 +691,16 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
 
       // Run the auto mode classifier
       const action = formatActionForClassifier(tool.name, input)
+      const classifierCallId = randomUUID()
       setClassifierChecking(toolUseID)
+      emitAutoModeClassifierSdk({
+        status: 'checking',
+        call_id: classifierCallId,
+        usage_scope: 'classifier_call',
+        usage_included_in_result: false,
+        tool_use_id: toolUseID,
+        tool_name: tool.name,
+      })
       let classifierResult
       try {
         logForDebugging(
@@ -700,6 +714,17 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           context.abortController.signal,
           context.langfuseRootTrace ?? context.langfuseTrace,
         )
+      } catch (error) {
+        emitAutoModeClassifierSdk({
+          status: 'error',
+          call_id: classifierCallId,
+          usage_scope: 'classifier_call',
+          usage_included_in_result: false,
+          tool_use_id: toolUseID,
+          tool_name: tool.name,
+          reason: toError(error).message,
+        })
+        throw error
       } finally {
         clearClassifierChecking(toolUseID)
       }
@@ -724,6 +749,28 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         : classifierResult.shouldBlock
           ? 'blocked'
           : 'allowed'
+
+      emitAutoModeClassifierSdk({
+        status: yoloDecision,
+        call_id: classifierCallId,
+        usage_scope: 'classifier_call',
+        usage_included_in_result: false,
+        tool_use_id: toolUseID,
+        tool_name: tool.name,
+        model: classifierResult.model,
+        reason: classifierResult.reason,
+        duration_ms: classifierResult.durationMs,
+        usage: classifierResult.usage
+          ? {
+              input_tokens: classifierResult.usage.inputTokens,
+              output_tokens: classifierResult.usage.outputTokens,
+              cache_read_input_tokens:
+                classifierResult.usage.cacheReadInputTokens,
+              cache_creation_input_tokens:
+                classifierResult.usage.cacheCreationInputTokens,
+            }
+          : undefined,
+      })
 
       // Compute classifier cost in USD for overhead analysis
       const classifierCostUSD =
@@ -1094,6 +1141,8 @@ export async function checkRuleBasedPermissions(
   input: { [key: string]: unknown },
   context: ToolUseContext,
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
+  const hostDenial = hostToolDenial(tool)
+  if (hostDenial) return hostDenial
   const appState = context.getAppState()
 
   // 1a. Entire tool is denied by rule
@@ -1285,11 +1334,13 @@ async function hasPermissionsToUseToolInner(
   appState = context.getAppState()
   // Check if permissions should be bypassed:
   // - Direct bypassPermissions mode
-  // - Plan mode when the user originally started with bypass mode (isBypassPermissionsModeAvailable)
+  // - Plan mode entered from bypassPermissions mode
+  // isBypassPermissionsModeAvailable only says the dangerous mode may be
+  // selected in this session; it does not grant bypass permissions itself.
   const shouldBypassPermissions =
     appState.toolPermissionContext.mode === 'bypassPermissions' ||
     (appState.toolPermissionContext.mode === 'plan' &&
-      appState.toolPermissionContext.isBypassPermissionsModeAvailable)
+      appState.toolPermissionContext.prePlanMode === 'bypassPermissions')
   if (shouldBypassPermissions) {
     return {
       behavior: 'allow',

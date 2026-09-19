@@ -325,7 +325,19 @@ export async function completeChatGPTDeviceLogin(
 }
 
 export function isChatGPTAuthEnabled(): boolean {
-  return process.env.OPENAI_AUTH_MODE === 'chatgpt'
+  return (
+    process.env.OPENAI_AUTH_MODE === 'chatgpt' ||
+    process.env.OPENAI_AUTH_MODE === 'host'
+  )
+}
+
+function getHostProvidedChatGPTAuth(): ChatGPTAuth | null {
+  const accessToken = asString(process.env.OPENAI_CHATGPT_ACCESS_TOKEN)
+  if (!accessToken) return null
+  return {
+    accessToken,
+    accountId: asString(process.env.OPENAI_CHATGPT_ACCOUNT_ID),
+  }
 }
 
 export async function removeChatGPTAuth(): Promise<void> {
@@ -337,6 +349,9 @@ export async function removeChatGPTAuth(): Promise<void> {
 }
 
 export async function getValidChatGPTAuth(): Promise<ChatGPTAuth> {
+  const hostAuth = getHostProvidedChatGPTAuth()
+  if (hostAuth) return hostAuth
+
   let tokens = await readStoredAuth(authFilePath())
   if (!tokens) {
     tokens = await readStoredAuth(codexAuthFilePath())

@@ -1,6 +1,6 @@
 {
   "name": "claude-code-best",
-  "version": "2.8.21",
+  "version": "2.8.22",
   "description": "Reverse-engineered Anthropic Claude Code CLI — interactive AI coding assistant in the terminal",
   "type": "module",
   "author": "claude-code-best <claude-code-best@proton.me>",
@@ -55,6 +55,8 @@
     "check:fix": "biome check --fix .",
     "prepare": "husky",
     "test": "bun test",
+    "test:isolated": "bun run scripts/test-isolated.ts",
+    "test:all": "bun run typecheck && bun run lint && bun run test:isolated",
     "test:production": "bun run scripts/production-test.ts",
     "test:production:offline": "bun run scripts/production-test.ts --offline",
     "test:production:verbose": "bun run scripts/production-test.ts --verbose",
@@ -66,7 +68,10 @@
     "docs:dev": "npx mintlify dev",
     "typecheck": "tsc --noEmit",
     "precheck": "bun run typecheck && bun run check:fix && bun test",
-    "rcs": "bun run scripts/rcs.ts"
+    "rcs": "bun run scripts/rcs.ts",
+    "desktop:dev": "bun --cwd=desktop run dev",
+    "desktop:build": "bun --cwd=desktop run electron:build",
+    "desktop:check": "bun --cwd=desktop run typecheck"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.0",
@@ -212,6 +217,7 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
+    "@napi-rs/keyring": "2.1.0",
     "doubaoime-asr": "^0.1.0"
   },
   "overrides": {

@@ -1,6 +1,9 @@
 import chokidar, { type FSWatcher } from 'chokidar'
 import * as platformPath from 'path'
-import { getAdditionalDirectoriesForClaudeMd } from '../../bootstrap/state.js'
+import {
+  getAdditionalDirectoriesForClaudeMd,
+  getAdditionalSkillDirectories,
+} from '../../bootstrap/state.js'
 import {
   clearCommandMemoizationCaches,
   clearCommandsCache,
@@ -100,6 +103,20 @@ export async function initialize(): Promise<void> {
     })
   }
 
+  await replaceWatcher()
+
+  // Register cleanup to properly dispose of the file watcher during graceful shutdown
+  unregisterCleanup = registerCleanup(async () => {
+    await dispose()
+  })
+}
+
+async function replaceWatcher(): Promise<void> {
+  if (watcher) {
+    await watcher.close()
+    watcher = null
+  }
+
   const paths = await getWatchablePaths()
   if (paths.length === 0) return
 
@@ -133,11 +150,19 @@ export async function initialize(): Promise<void> {
   watcher.on('add', handleChange)
   watcher.on('change', handleChange)
   watcher.on('unlink', handleChange)
+}
 
-  // Register cleanup to properly dispose of the file watcher during graceful shutdown
-  unregisterCleanup = registerCleanup(async () => {
-    await dispose()
-  })
+/**
+ * Rebuilds the watcher after session-scoped Skill directories change.
+ * Initializes the detector on first use, including in bare/headless sessions.
+ */
+export async function refreshWatchPaths(): Promise<void> {
+  if (disposed) return
+  if (!initialized) {
+    await initialize()
+    return
+  }
+  await replaceWatcher()
 }
 
 /**
@@ -231,7 +256,17 @@ async function getWatchablePaths(): Promise<string[]> {
     }
   }
 
-  return paths
+  // Host-provided Skill directories directly contain skill-name/SKILL.md.
+  for (const dir of getAdditionalSkillDirectories()) {
+    try {
+      await fs.stat(dir)
+      paths.push(dir)
+    } catch {
+      // Path doesn't exist, skip it
+    }
+  }
+
+  return [...new Set(paths)]
 }
 
 function handleChange(path: string): void {
@@ -305,6 +340,7 @@ export async function resetForTesting(overrides?: {
 
 export const skillChangeDetector = {
   initialize,
+  refreshWatchPaths,
   dispose,
   subscribe,
   resetForTesting,

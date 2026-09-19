@@ -8,6 +8,7 @@ import {
   test,
 } from 'bun:test'
 import { setupAxiosMock } from '../../../../../../tests/mocks/axios'
+import * as actualErrors from '../../../../../../src/utils/errors'
 
 // Each test below calls `mock.module('axios', ...)` per-test. Without an
 // afterAll cleanup, the LAST per-test stub leaks into every test file that
@@ -22,6 +23,7 @@ afterAll(() => {
 // src/* path alias resolution. Provide AbortError directly so the dynamic
 // import in createAdapter() never needs to resolve the alias at runtime.
 const _abortMock = () => ({
+  ...actualErrors,
   AbortError: class AbortError extends Error {
     constructor(message?: string) {
       super(message)
@@ -30,6 +32,10 @@ const _abortMock = () => ({
   },
   isAbortError: (e: unknown) =>
     e instanceof Error && (e as Error).name === 'AbortError',
+  getErrnoCode: (e: unknown) =>
+    e && typeof e === 'object' && 'code' in e && typeof e.code === 'string'
+      ? e.code
+      : undefined,
 })
 mock.module('src/utils/errors.js', _abortMock)
 mock.module('src/utils/errors', _abortMock)

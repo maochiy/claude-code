@@ -82,7 +82,10 @@ export function isSynchronizedOutputSupported(): boolean {
     termProgram === 'ghostty' ||
     termProgram === 'contour' ||
     termProgram === 'vscode' ||
-    termProgram === 'alacritty'
+    termProgram === 'alacritty' ||
+    // Otty buffers between BSU/ESU and paints in a single frame
+    // (TERM=xterm-256color, so nothing else matches it).
+    termProgram === 'otty'
   ) {
     return true
   }

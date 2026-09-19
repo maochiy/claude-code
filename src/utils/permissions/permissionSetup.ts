@@ -1269,7 +1269,10 @@ function isAutoModeDisabledBySettings(): boolean {
  * have not disabled it. Synchronous.
  */
 export function isAutoModeGateEnabled(): boolean {
-  return true
+  if (!feature('TRANSCRIPT_CLASSIFIER')) {
+    return false
+  }
+  return getAutoModeUnavailableReason() === null
 }
 
 /**

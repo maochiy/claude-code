@@ -1,0 +1,416 @@
+import { describe, expect, test } from 'bun:test'
+import type { AgentRuntimeModelCatalog, SDKMessage } from '@proma/shared'
+import {
+  derivePersistedAgentContextUsage,
+  normalizeAgentContextUsageBreakdown,
+  resolveAgentContextPolicy,
+  resolveAgentContextStatus,
+} from './agent-context-usage'
+
+describe('CLI 上下文分类归一化', () => {
+  test('Given CLI 返回真实容量与分类 When 归一化 Then 保留显式字段并兼容 snake_case usage', () => {
+    expect(normalizeAgentContextUsageBreakdown({
+      categories: [
+        { name: 'System prompt', tokens: 1_200, color: '#ff8800' },
+        { name: 'Messages', tokens: 2_400, isDeferred: true },
+        { name: 'Invalid' },
+      ],
+      totalTokens: 3_600,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 1.8,
+      model: 'claude-sonnet-4-6',
+      isAutoCompactEnabled: true,
+      autoCompactThreshold: 170_000,
+      apiUsage: {
+        input_tokens: 800,
+        output_tokens: 200,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 2_500,
+      },
+    })).toEqual({
+      categories: [
+        { name: 'System prompt', tokens: 1_200, color: '#ff8800' },
+        { name: 'Messages', tokens: 2_400, isDeferred: true },
+      ],
+      totalTokens: 3_600,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 1.8,
+      model: 'claude-sonnet-4-6',
+      autoCompactEnabled: true,
+      autoCompactThreshold: 170_000,
+      apiUsage: {
+        inputTokens: 800,
+        outputTokens: 200,
+        cacheCreationTokens: 100,
+        cacheReadTokens: 2_500,
+      },
+    })
+  })
+
+  test('Given CLI 未返回容量 When 归一化 Then 不根据分类合计伪造 maxTokens', () => {
+    const normalized = normalizeAgentContextUsageBreakdown({
+      categories: [{ name: 'Messages', tokens: 2_400 }],
+      totalTokens: 2_400,
+    })
+
+    expect(normalized).toEqual({
+      categories: [{ name: 'Messages', tokens: 2_400 }],
+      totalTokens: 2_400,
+    })
+    expect(normalized?.maxTokens).toBeUndefined()
+  })
+})
+
+describe('对话压缩配置与当前轮隔离', () => {
+  const catalog: AgentRuntimeModelCatalog = {
+    channelId: 'configured-channel', models: [],
+    contextPolicy: {
+      autoCompactEnabled: true,
+      models: [{
+        model: 'B', contextWindow: 100_000,
+        effectiveContextWindow: 100_000, autoCompactThreshold: 70_000,
+      }],
+    },
+  }
+  const runningA = {
+    isCompacting: false, inputTokens: 12_000, contextWindow: 200_000,
+    autoCompactEnabled: true, autoCompactThreshold: 160_000, effectiveContextWindow: 200_000,
+  }
+
+  test('Given A 活跃而用户选择 B When 计算上下文显示 Then 保留 A 的窗口阈值与用量', () => {
+    expect(resolveAgentContextStatus(runningA, catalog, 'B', true)).toBe(runningA)
+  })
+
+  test('Given A 完成而下一轮选择 B When 计算上下文显示 Then 使用 B 的配置且不篡改历史用量', () => {
+    expect(resolveAgentContextStatus(runningA, catalog, 'B', false)).toEqual({
+      ...runningA, contextWindow: 100_000, effectiveContextWindow: 100_000, autoCompactThreshold: 70_000,
+    })
+    expect(runningA.contextWindow).toBe(200_000)
+  })
+
+  test('Given 新会话无运行统计 When 已配置 B Then 发消息前显示窗口与阈值', () => {
+    expect(resolveAgentContextStatus({ isCompacting: false }, catalog, 'B', false))
+      .toMatchObject({ contextWindow: 100_000, autoCompactEnabled: true, autoCompactThreshold: 70_000 })
+  })
+
+  test('Given A 尚未同步运行策略而用户选择 B When A 活跃 Then 不把 B 配置冒充 A 的执行策略', () => {
+    expect(resolveAgentContextStatus({ isCompacting: false }, catalog, 'B', true))
+      .toEqual({ isCompacting: false })
+  })
+
+  test('Given 模型目录加载失败 When 计算上下文显示 Then 保留运行层已知策略', () => {
+    expect(resolveAgentContextStatus(runningA, undefined, 'A', false)).toBe(runningA)
+  })
+})
+
+describe('历史会话上下文圆环水合', () => {
+  test('Given CCB 轻量策略目录 When 打开历史会话 Then 无需启动 Turn 即可读取可用窗口', () => {
+    const catalog: AgentRuntimeModelCatalog = {
+      channelId: 'channel-1',
+      models: [],
+      contextPolicy: {
+        autoCompactEnabled: true,
+        models: [
+          {
+            model: 'claude-sonnet-4-6',
+            contextWindow: 200_000,
+            effectiveContextWindow: 180_000,
+            autoCompactThreshold: 167_000,
+          },
+        ],
+      },
+    }
+
+    expect(resolveAgentContextPolicy(catalog, 'claude-sonnet-4-6[1m]')).toEqual(
+      catalog.contextPolicy.models[0],
+    )
+  })
+
+  test('Given 普通 assistant usage When 重开会话 Then 恢复最近上下文占用', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          usage: {
+            input_tokens: 12_000,
+            output_tokens: 800,
+            cache_read_input_tokens: 30_000,
+            cache_creation_input_tokens: 2_000,
+          },
+        },
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 44_000,
+      outputTokens: 800,
+      cacheReadTokens: 30_000,
+      cacheCreationTokens: 2_000,
+      cumulativeInputTokens: 12_000,
+      cumulativeCacheReadTokens: 30_000,
+      cumulativeCacheCreationTokens: 2_000,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: false,
+    })
+  })
+
+  test('Given 手动压缩边界和压缩 result When 重开会话 Then 保留 post_tokens', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: {
+          trigger: 'manual',
+          pre_tokens: 168_000,
+          post_tokens: 24_000,
+        },
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        usage: {
+          input_tokens: 168_000,
+          output_tokens: 2_000,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 24_000,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: true,
+    })
+  })
+
+  test('Given 最新压缩边界位于投影开头 When 后面仍有旧 usage Then 按创建时间保留压缩后占用', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: {
+          trigger: 'manual',
+          pre_tokens: 0,
+          post_tokens: 984,
+        },
+        _createdAt: 2_000,
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          usage: {
+            input_tokens: 2_516,
+            output_tokens: 1_128,
+            cache_read_input_tokens: 55_040,
+            cache_creation_input_tokens: 0,
+          },
+        },
+        _createdAt: 1_000,
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+        _createdAt: 1_000,
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 984,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: true,
+    })
+  })
+
+  test('Given 同一时刻同时存在压缩边界和累计 result When 恢复 Then 压缩边界优先', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: {
+          trigger: 'manual',
+          pre_tokens: 58_684,
+          post_tokens: 984,
+        },
+        _createdAt: 2_000,
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        usage: {
+          input_tokens: 57_941,
+          output_tokens: 3_258,
+          cache_read_input_tokens: 297_216,
+          cache_creation_input_tokens: 0,
+        },
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+        _createdAt: 2_000,
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 984,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: true,
+    })
+  })
+
+  test('Given 压缩后产生了更新的 assistant usage When 恢复 Then 使用最新真实用量', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'system',
+        subtype: 'compact_boundary',
+        compact_metadata: {
+          trigger: 'manual',
+          pre_tokens: 58_684,
+          post_tokens: 984,
+        },
+        _createdAt: 2_000,
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          usage: {
+            input_tokens: 1_200,
+            output_tokens: 300,
+            cache_read_input_tokens: 900,
+            cache_creation_input_tokens: 0,
+          },
+        },
+        _createdAt: 3_000,
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+        _createdAt: 3_000,
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 2_100,
+      outputTokens: 300,
+      cacheReadTokens: 900,
+      cacheCreationTokens: 0,
+      cumulativeInputTokens: 1_200,
+      cumulativeCacheReadTokens: 900,
+      cumulativeCacheCreationTokens: 0,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: false,
+    })
+  })
+
+  test('Given 会话已收到 CCB 压缩配置 When 重开会话 Then 恢复完整上下文面板', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'system',
+        subtype: 'context_compaction_config',
+        autoCompactEnabled: true,
+        autoCompactThreshold: 167_000,
+        effectiveContextWindow: 180_000,
+        _createdAt: 1_000,
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        message: {
+          usage: {
+            input_tokens: 20_000,
+            output_tokens: 500,
+            cache_read_input_tokens: 10_000,
+            cache_creation_input_tokens: 0,
+          },
+        },
+        _createdAt: 2_000,
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        modelUsage: {
+          model: { contextWindow: 200_000 },
+        },
+        _createdAt: 2_000,
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 30_000,
+      outputTokens: 500,
+      cacheReadTokens: 10_000,
+      cacheCreationTokens: 0,
+      cumulativeInputTokens: 20_000,
+      cumulativeCacheReadTokens: 10_000,
+      cumulativeCacheCreationTokens: 0,
+      contextWindow: 200_000,
+      contextUsageIsEstimated: false,
+      autoCompactEnabled: true,
+      autoCompactThreshold: 167_000,
+      effectiveContextWindow: 180_000,
+    })
+  })
+
+  test('Given 连续两轮 result.usage 是进程累计快照 When 重开会话 Then 仅累计差额且当前值标为估算', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'result',
+        subtype: 'success',
+        usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 20 },
+        _createdAt: 1_000,
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        usage: { input_tokens: 160, output_tokens: 25, cache_read_input_tokens: 50 },
+        _createdAt: 2_000,
+      },
+    ] as SDKMessage[])
+
+    expect(restored).toMatchObject({
+      inputTokens: 90,
+      outputTokens: 15,
+      cacheReadTokens: 30,
+      cumulativeInputTokens: 160,
+      cumulativeCacheReadTokens: 50,
+      contextUsageIsEstimated: true,
+    })
+  })
+
+  test('Given 历史先用大窗口后切到小窗口 When 水合 Then 使用最新模型容量而不是历史最大值', () => {
+    const restored = derivePersistedAgentContextUsage([
+      {
+        type: 'result', subtype: 'success', _createdAt: 1_000,
+        usage: { input_tokens: 10, output_tokens: 1 },
+        modelUsage: { large: { contextWindow: 1_000_000 } },
+      },
+      {
+        type: 'result', subtype: 'success', _createdAt: 2_000,
+        usage: { input_tokens: 20, output_tokens: 2 },
+        modelUsage: { small: { contextWindow: 200_000 } },
+      },
+    ] as SDKMessage[])
+
+    expect(restored?.contextWindow).toBe(200_000)
+  })
+})

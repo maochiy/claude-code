@@ -392,10 +392,17 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe('Tool usage permissions configuration'),
       modelType: z
-        .enum(['anthropic', 'openai', 'gemini', 'grok'])
+        .enum([
+          'anthropic',
+          'openai',
+          'openai-responses',
+          'openai-responses-oauth',
+          'gemini',
+          'grok',
+        ])
         .optional()
         .describe(
-          'API provider type. "anthropic" uses the Anthropic API (default), "openai" uses the OpenAI Chat Completions API, "gemini" uses the Gemini API, and "grok" uses the xAI Grok API (OpenAI-compatible). ' +
+          'API provider type. "anthropic" uses the Anthropic API (default), "openai" uses OpenAI Chat Completions, "openai-responses" uses the OpenAI Responses API, "openai-responses-oauth" uses ChatGPT OAuth Responses, "gemini" uses the Gemini API, and "grok" uses the xAI Grok API (OpenAI-compatible). ' +
             'Use model + models for a selectable provider model catalog. Legacy single-model environment variables remain supported.',
         ),
       model: z

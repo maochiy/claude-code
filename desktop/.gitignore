@@ -1,0 +1,70 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# 编译产物：proma CLI 二进制（build:cli 用 bun build --compile 生成，打包时现编，不进 git）
+apps/electron/resources/bin/
+# CCB Desktop Runtime Artifact 由打包脚本按平台同步，不进入源码仓库。
+apps/electron/resources/ccb-runtime/
+# bun build --compile 的临时中间产物
+*.bun-build
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# ignore craft-agents-oss folder
+craft-agents-oss
+
+# ignore what_are_humans_thinking folder
+what_are_humans_thinking
+
+# vendor binaries
+vendor
+apps/electron/resources/local-runtime/
+apps/local-service/src/index.js
+apps/local-service/src/index.js.map
+
+# git worktrees (managed by proma-worktree skill)
+.worktrees
+# pnpm (本项目用 bun，禁止误提交 pnpm lockfile)
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Proma 会话/工作区文档（不应入仓，见 CLAUDE.md 红线）
+.context/
+
+# Claude worktrees (本地工作目录)
+.claude/
+
+# 本地 Agent 会话状态与临时视觉预览，不属于发布源码。
+.omo/
+apps/electron/src/renderer/__activity_check.html
+apps/electron/src/renderer/__activity_check.tsx

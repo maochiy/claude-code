@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "startedAt": "2026-09-18T07:21:43.614Z",
+  "finishedAt": "2026-09-18T07:21:59.102Z",
+  "repoRoot": "/Volumes/code/code/agent/claude-code",
+  "command": [
+    "/Users/qianmeng/.bun/bin/bun",
+    "/Volumes/code/code/agent/claude-code/scripts/test-isolated.ts",
+    "--concurrency",
+    "1",
+    "--timeout",
+    "180000",
+    "packages/builtin-tools/src/tools/AgentTool/__tests__/resumeAgent.test.ts",
+    "packages/builtin-tools/src/tools/BashTool/__tests__/backslashEscaping.test.ts",
+    "packages/builtin-tools/src/tools/BashTool/__tests__/commandSemantics.test.ts",
+    "packages/builtin-tools/src/tools/BashTool/__tests__/compoundCommandSecurity.test.ts",
+    "packages/builtin-tools/src/tools/BashTool/__tests__/networkDeviceRedirect.test.ts",
+    "packages/builtin-tools/src/tools/CtxInspectTool/__tests__/CtxInspectTool.test.ts",
+    "packages/builtin-tools/src/tools/FileReadTool/__tests__/inputSchema.test.ts",
+    "packages/builtin-tools/src/tools/LocalMemoryRecallTool/__tests__/LocalMemoryRecallTool.test.ts",
+    "packages/builtin-tools/src/tools/VaultHttpFetchTool/__tests__/VaultHttpFetchTool.test.ts"
+  ],
+  "options": {
+    "concurrency": 1,
+    "timeoutMs": 180000,
+    "filter": null
+  },
+  "discovered": 471,
+  "selected": 9,
+  "completed": 9,
+  "passed": 9,
+  "failed": 0,
+  "interrupted": false,
+  "results": [
+    {
+      "file": "packages/builtin-tools/src/tools/AgentTool/__tests__/resumeAgent.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 4236,
+      "tempDirectory": "/tmp/ccb-test-U7h5ct",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/BashTool/__tests__/backslashEscaping.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1282,
+      "tempDirectory": "/tmp/ccb-test-EKzqZr",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/BashTool/__tests__/commandSemantics.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1302,
+      "tempDirectory": "/tmp/ccb-test-PcLzDt",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/BashTool/__tests__/compoundCommandSecurity.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1561,
+      "tempDirectory": "/tmp/ccb-test-9JCc1U",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/BashTool/__tests__/networkDeviceRedirect.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1447,
+      "tempDirectory": "/tmp/ccb-test-swH2Cx",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/CtxInspectTool/__tests__/CtxInspectTool.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1380,
+      "tempDirectory": "/tmp/ccb-test-UvHDeq",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/FileReadTool/__tests__/inputSchema.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1310,
+      "tempDirectory": "/tmp/ccb-test-V5qHXj",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/LocalMemoryRecallTool/__tests__/LocalMemoryRecallTool.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1473,
+      "tempDirectory": "/tmp/ccb-test-CEPz9V",
+      "logFile": null
+    },
+    {
+      "file": "packages/builtin-tools/src/tools/VaultHttpFetchTool/__tests__/VaultHttpFetchTool.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1359,
+      "tempDirectory": "/tmp/ccb-test-YqlXCI",
+      "logFile": null
+    }
+  ]
+}

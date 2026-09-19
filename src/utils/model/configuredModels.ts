@@ -143,7 +143,13 @@ export function getInitialConfiguredModels(
   if (configuredModelCatalogOverride?.provider === provider) {
     return configuredModelCatalogOverride.models
   }
-  if (settings.modelType === provider && settings.models?.length) {
+  const configuredForProvider =
+    provider === 'openai'
+      ? settings.modelType === 'openai' ||
+        settings.modelType === 'openai-responses' ||
+        settings.modelType === 'openai-responses-oauth'
+      : settings.modelType === provider
+  if (configuredForProvider && settings.models?.length) {
     return normalizeConfiguredModels(settings.models)
   }
   return getLegacyConfiguredModels(provider)

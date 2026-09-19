@@ -1,0 +1,131 @@
+/**
+ * useCloseTab — 统一的当前会话入口关闭逻辑
+ *
+ * 被 GlobalShortcuts（Cmd+W）等会话关闭入口共用，
+ *
+ * 关键行为：
+ * - 关闭当前会话入口回到主页空态，不停止后台 Agent
+ * - 运行中或阻塞中的会话继续通过左侧状态 indicator 恢复
+ * - idle 状态的 Agent 会话在用户主动关闭 Tab 时清除完成提醒状态
+ * - 真正删除/归档时由侧边栏路径负责清理 per-session 状态
+ */
+
+import * as React from 'react'
+import { useAtom, useSetAtom } from 'jotai'
+import { useStore } from 'jotai'
+import {
+  tabsAtom,
+  activeTabIdAtom,
+  closeTab,
+} from '@/atoms/tab-atoms'
+import {
+  agentSessionsAtom,
+  agentSessionIndicatorMapAtom,
+  unviewedCompletedSessionIdsAtom,
+} from '@/atoms/agent-atoms'
+import { agentSideChatMapAtom } from '@/atoms/chat-atoms'
+import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
+import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
+
+interface UseCloseTabReturn {
+  /** 请求关闭当前会话入口 */
+  requestClose: (tabId: string) => void
+  /** 直接执行关闭 */
+  executeClose: (tabId: string) => void
+}
+
+export function useCloseTab(): UseCloseTabReturn {
+  const [tabs, setTabs] = useAtom(tabsAtom)
+  const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
+  const syncActiveTabSideEffects = useSyncActiveTabSideEffects()
+  const store = useStore()
+  const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
+  const setAgentSessions = useSetAtom(agentSessionsAtom)
+  const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
+  const setSideChatMap = useSetAtom(agentSideChatMapAtom)
+
+  const clearIdleAgentCompletionNotice = React.useCallback((sessionId: string) => {
+    const indicatorMap = store.get(agentSessionIndicatorMapAtom)
+    const status = indicatorMap.get(sessionId)
+    // running 或 blocked 的会话仍需要侧边栏状态提示
+    if (status === 'running' || status === 'blocked') return
+
+    // 通过 IPC 清除持久化的 completedButUnconfirmed 和旧版 manualWorking 状态
+    window.electronAPI.clearAgentCompletionState(sessionId)
+      .then((updated) => {
+        setAgentSessions((prev) =>
+          prev.map((s) => (s.id === updated.id ? updated : s))
+        )
+      })
+      .catch(console.error)
+
+    setUnviewedCompleted((prev) => {
+      if (!prev.has(sessionId)) return prev
+      const next = new Set(prev)
+      next.delete(sessionId)
+      return next
+    })
+  }, [store, setAgentSessions, setUnviewedCompleted])
+
+  const executeClose = React.useCallback((tabId: string) => {
+    const closingTab = tabs.find((t) => t.id === tabId)
+    const wasActive = activeTabId === tabId
+    const result = closeTab(tabs, activeTabId, tabId)
+    setTabs(result.tabs)
+    setActiveTabId(result.activeTabId)
+
+    if (closingTab) {
+      if (closingTab.type === 'agent') {
+        setSideChatMap((prev) => {
+          if (!prev.has(closingTab.sessionId)) return prev
+          const next = new Map(prev)
+          next.delete(closingTab.sessionId)
+          return next
+        })
+      } else if (closingTab.type === 'chat') {
+        setSideChatMap((prev) => {
+          let changed = false
+          const next = new Map(prev)
+          for (const [ownerSessionId, conversationId] of next) {
+            if (conversationId === closingTab.sessionId) {
+              next.delete(ownerSessionId)
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
+      }
+    }
+
+    if (wasActive) {
+      const newActiveTab = result.activeTabId
+        ? result.tabs.find((t) => t.id === result.activeTabId) ?? null
+        : null
+      syncActiveTabSideEffects(newActiveTab)
+    }
+
+    // 未发送首条消息的临时任务关闭后直接删除，不留下历史会话记录。
+    if (closingTab && closingTab.type === 'agent') {
+      const isDraft = store.get(draftSessionIdsAtom).has(closingTab.sessionId)
+      if (isDraft) {
+        setDraftSessionIds((prev) => {
+          const next = new Set(prev)
+          next.delete(closingTab.sessionId)
+          return next
+        })
+        setAgentSessions((prev) => prev.filter((session) => session.id !== closingTab.sessionId))
+        window.electronAPI.deleteAgentSession(closingTab.sessionId).catch((error) => {
+          console.error('[关闭标签页] 删除空白临时任务失败:', error)
+        })
+      } else {
+        clearIdleAgentCompletionNotice(closingTab.sessionId)
+      }
+    }
+  }, [tabs, activeTabId, setTabs, setActiveTabId, setSideChatMap, syncActiveTabSideEffects, clearIdleAgentCompletionNotice, setAgentSessions, setDraftSessionIds, store])
+
+  const requestClose = React.useCallback((tabId: string) => {
+    executeClose(tabId)
+  }, [executeClose])
+
+  return { requestClose, executeClose }
+}

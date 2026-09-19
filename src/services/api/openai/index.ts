@@ -27,11 +27,13 @@ import {
   anthropicToolChoiceToOpenAI,
 } from '@ant/model-provider'
 import { resolveProviderModelId } from '../../../utils/model/providerModel.js'
-import { isChatGPTAuthEnabled } from './chatgptAuth.js'
+import { getInitialSettings } from '../../../utils/settings/settings.js'
+import { resolveOpenAIProtocol } from './protocol.js'
 import {
   adaptResponsesStreamToAnthropic,
   buildResponsesRequest,
   createChatGPTResponsesStream,
+  createOpenAIResponsesStream,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
@@ -371,7 +373,9 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    const useChatGPTResponses = isChatGPTAuthEnabled()
+    const openAIProtocol = resolveOpenAIProtocol(getInitialSettings().modelType)
+    const useResponses = openAIProtocol !== 'chat-completions'
+    const useChatGPTResponses = openAIProtocol === 'responses-oauth'
     // OpenAI's official OAuth and API-key routes share the same prompt-cache
     // contract. Scope the key to the real conversation so resumed turns stay
     // sticky while unrelated sessions do not share a routing bucket. Generic
@@ -387,47 +391,61 @@ export async function* queryModelOpenAI(
       `[OpenAI] Calling model=${openaiModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}${promptCacheKey ? `, prompt_cache_key=${promptCacheKey}` : ''}`,
     )
 
-    // 11. Call OpenAI API with streaming. ChatGPT subscription auth uses the
-    // Codex Responses backend; API-key/OpenAI-compatible auth keeps the
-    // existing Chat Completions adapter.
-    const adaptedStream = useChatGPTResponses
-      ? adaptResponsesStreamToAnthropic(
-          await createChatGPTResponsesStream({
-            request: buildResponsesRequest({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              reasoningEffort,
-              promptCacheKey: sessionPromptCacheKey,
-            }),
-            signal,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-          }),
-          openaiModel,
-        )
-      : adaptOpenAIStreamToAnthropic(
-          await getOpenAIClient({
-            maxRetries: 0,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-            source: options.querySource,
-          }).chat.completions.create(
-            buildOpenAIRequestBody({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              enableThinking,
-              reasoningEffort: chatReasoningEffort,
-              maxTokens,
-              temperatureOverride: options.temperatureOverride,
-              promptCacheKey,
-            }),
-            { signal },
-          ),
-          openaiModel,
-          { includeCacheWriteTokens: useOfficialOpenAICache },
-        )
+    // 11. Call the explicitly configured OpenAI protocol. OAuth uses the
+    // ChatGPT Codex Responses backend; API-key Responses and compatible Chat
+    // Completions remain separate routes.
+    const responsesRequest = useResponses
+      ? buildResponsesRequest({
+          model: openaiModel,
+          messages: openaiMessages,
+          tools: openaiTools,
+          toolChoice: openaiToolChoice,
+          reasoningEffort,
+          promptCacheKey: useChatGPTResponses
+            ? sessionPromptCacheKey
+            : promptCacheKey,
+        })
+      : undefined
+    const adaptedStream =
+      useResponses && responsesRequest
+        ? adaptResponsesStreamToAnthropic(
+            await (useChatGPTResponses
+              ? createChatGPTResponsesStream({
+                  request: responsesRequest,
+                  signal,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                })
+              : createOpenAIResponsesStream({
+                  request: responsesRequest,
+                  signal,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                })),
+            openaiModel,
+          )
+        : adaptOpenAIStreamToAnthropic(
+            await getOpenAIClient({
+              maxRetries: 0,
+              fetchOverride: options.fetchOverride as unknown as typeof fetch,
+              source: options.querySource,
+            }).chat.completions.create(
+              buildOpenAIRequestBody({
+                model: openaiModel,
+                messages: openaiMessages,
+                tools: openaiTools,
+                toolChoice: openaiToolChoice,
+                enableThinking,
+                reasoningEffort: chatReasoningEffort,
+                maxTokens,
+                temperatureOverride: options.temperatureOverride,
+                promptCacheKey,
+              }),
+              { signal },
+            ),
+            openaiModel,
+            { includeCacheWriteTokens: useOfficialOpenAICache },
+          )
 
     // 12. Convert OpenAI stream to Anthropic events, then process into
     //     AssistantMessage + StreamEvent (matching the Anthropic path behavior)

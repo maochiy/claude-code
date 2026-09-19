@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from '../utils/debug.js'
+import { constrainWorkflowConcurrency } from '../utils/dynamicWorkflows.js'
 import { buildHostBundle, makeHostHandle } from './hostHandle.js'
 import { installWorkflowNotifications } from './notifications.js'
 import {
@@ -186,6 +187,7 @@ export function makeService(
     ports,
 
     async launch(input, toolUseContext, canUseTool) {
+      const runtimeInput = constrainWorkflowConcurrency(input)
       const { script, workflowFile, workflowName } = await resolveSource(input)
       try {
         parseScript(script)
@@ -233,8 +235,8 @@ export function makeService(
         signal,
         cwd: host.cwd,
         budgetTotal: host.budgetTotal,
-        ...(input.maxConcurrency !== undefined
-          ? { maxConcurrency: input.maxConcurrency }
+        ...(runtimeInput.maxConcurrency !== undefined
+          ? { maxConcurrency: runtimeInput.maxConcurrency }
           : {}),
         ...(input.resumeFromRunId ? { resume: true } : {}),
       })

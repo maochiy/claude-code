@@ -1520,6 +1520,14 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
     compact_metadata: z.object({
       trigger: z.enum(['manual', 'auto']),
       pre_tokens: z.number(),
+      post_tokens: z
+        .number()
+        .optional()
+        .describe('Estimated context tokens remaining after compaction.'),
+      summary: z
+        .string()
+        .optional()
+        .describe('Truncated preview of the summary produced by compaction.'),
       preserved_segment: z
         .object({
           head_uuid: UUIDPlaceholder(),
@@ -1535,6 +1543,32 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
             'everything (no messagesToKeep).',
         ),
     }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKAutoModeClassifierMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('auto_mode_classifier'),
+    status: z.enum(['checking', 'allowed', 'blocked', 'unavailable', 'error']),
+    call_id: z.string(),
+    usage_scope: z.literal('classifier_call'),
+    usage_included_in_result: z.literal(false),
+    tool_use_id: z.string(),
+    tool_name: z.string(),
+    model: z.string().optional(),
+    reason: z.string().optional(),
+    duration_ms: z.number().optional(),
+    usage: z
+      .object({
+        input_tokens: z.number(),
+        output_tokens: z.number(),
+        cache_read_input_tokens: z.number(),
+        cache_creation_input_tokens: z.number(),
+      })
+      .optional(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1722,6 +1756,47 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKTaskSnapshotSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string(),
+    task_type: z.enum([
+      'local_bash',
+      'local_agent',
+      'remote_agent',
+      'in_process_teammate',
+      'local_workflow',
+      'monitor_mcp',
+      'dream',
+    ]),
+    status: z.enum(['pending', 'running', 'completed', 'failed', 'killed']),
+    description: z.string(),
+    tool_use_id: z.string().optional(),
+    start_time: z.number(),
+    end_time: z.number().optional(),
+    duration_ms: z.number(),
+    output_bytes: z.number(),
+    parent_task_id: z.string().optional(),
+    child_task_ids: z.array(z.string()),
+    agent_id: z.string().optional(),
+    agent_type: z.string().optional(),
+    model: z.string().optional(),
+    output_available: z.boolean(),
+    transcript_available: z.boolean(),
+  }),
+)
+
+export const SDKTodoSnapshotSchema = lazySchema(() =>
+  z.object({
+    id: z.string(),
+    subject: z.string(),
+    status: z.enum(['pending', 'in_progress', 'completed']),
+    activeForm: z.string().optional(),
+    owner: z.string().optional(),
+    blocks: z.array(z.string()),
+    blockedBy: z.array(z.string()),
+  }),
+)
+
 export const SDKTaskStartedMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -1881,6 +1956,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKTaskStartedMessageSchema(),
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
+    SDKAutoModeClassifierMessageSchema(),
     SDKFilesPersistedEventSchema(),
     SDKToolUseSummaryMessageSchema(),
     SDKRateLimitEventSchema(),

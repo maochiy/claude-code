@@ -24,6 +24,12 @@ import {
 } from './compact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
+import { resolveSessionAutoCompactEnabled } from './autoCompactSession.js'
+
+export {
+  getSessionAutoCompactOverride,
+  setSessionAutoCompactOverride,
+} from './autoCompactSession.js'
 
 // Reserve this many tokens for output during compaction
 // Based on p99.99 of compact summary output being 17,387 tokens.
@@ -174,16 +180,16 @@ export function calculateTokenWarningState(
 }
 
 export function isAutoCompactEnabled(): boolean {
-  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+  const disabledByEnvironment =
+    isEnvTruthy(process.env.DISABLE_COMPACT) ||
+    isEnvTruthy(process.env.DISABLE_AUTO_COMPACT)
+  if (disabledByEnvironment) {
     return false
   }
-  // Allow disabling just auto-compact (keeps manual /compact working)
-  if (isEnvTruthy(process.env.DISABLE_AUTO_COMPACT)) {
-    return false
-  }
-  // Check if user has disabled auto-compact in their settings
-  const userConfig = getGlobalConfig()
-  return userConfig.autoCompactEnabled
+  return resolveSessionAutoCompactEnabled(
+    getGlobalConfig().autoCompactEnabled,
+    false,
+  )
 }
 
 export async function shouldAutoCompact(

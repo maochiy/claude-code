@@ -1,4 +1,5 @@
 import { mock, describe, expect, test } from 'bun:test'
+import { z } from 'zod'
 import { logMock } from '../../../../tests/mocks/log'
 import { createFileStateCacheWithSizeLimit } from '../../../utils/fileStateCache.js'
 import { createSubagentContext } from '../../../utils/forkedAgent.js'
@@ -11,7 +12,31 @@ const {
   getAskRuleForTool,
   getDenyRuleForAgent,
   filterDeniedAgents,
+  hasPermissionsToUseTool,
 } = await import('../permissions')
+
+function makePermissionCheckContext(
+  mode: 'plan' | 'bypassPermissions',
+  prePlanMode?: 'bypassPermissions',
+) {
+  const toolPermissionContext = {
+    ...getEmptyToolPermissionContext(),
+    mode,
+    prePlanMode,
+  }
+  return {
+    abortController: new AbortController(),
+    getAppState: () => ({ toolPermissionContext }),
+  } as never
+}
+
+const mutatingTool = {
+  name: 'Write',
+  inputSchema: z.object({ file_path: z.string() }),
+  async checkPermissions() {
+    return { behavior: 'passthrough' as const, message: 'Allow write?' }
+  },
+} as never
 
 function makeContext(opts: { denyRules?: string[]; askRules?: string[] }) {
   const ctx = getEmptyToolPermissionContext()
@@ -125,5 +150,31 @@ describe('filterDeniedAgents', () => {
     })
     const agents = [{ agentType: 'Explore' }, { agentType: 'Research' }]
     expect(filterDeniedAgents(agents, ctx, 'Agent')).toEqual([])
+  })
+})
+
+describe('plan mode mutation permissions', () => {
+  test('asks before a mutating tool when plan mode starts directly', async () => {
+    const result = await hasPermissionsToUseTool(
+      mutatingTool,
+      { file_path: '/tmp/plan-output.txt' },
+      makePermissionCheckContext('plan'),
+      {} as never,
+      'tool-plan',
+    )
+
+    expect(result.behavior).toBe('ask')
+  })
+
+  test('preserves bypass only when plan mode was entered from bypassPermissions', async () => {
+    const result = await hasPermissionsToUseTool(
+      mutatingTool,
+      { file_path: '/tmp/plan-output.txt' },
+      makePermissionCheckContext('plan', 'bypassPermissions'),
+      {} as never,
+      'tool-plan-bypass',
+    )
+
+    expect(result.behavior).toBe('allow')
   })
 })

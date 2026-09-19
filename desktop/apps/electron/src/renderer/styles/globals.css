@@ -1,0 +1,1486 @@
+@import "./cursor-themes.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== 全局字体与渲染优化 =====
+ * 优先 Inter Variable（自托管，见 main.tsx 引入） → SF Pro Text（macOS 系统） → system-ui；
+ * 数字使用 tabular-nums，配合 cv11/ss01/ss03 让字形接近 Vercel / Linear 的现代感。
+ */
+:root {
+  font-family:
+    'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont,
+    'SF Pro Text', 'PingFang SC', 'Segoe UI', 'Microsoft YaHei',
+    system-ui, sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'ss03', 'tnum';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* 代码/终端等宽字体栈，由 code-font atom 运行时覆写 */
+  --app-code-font: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
+  --chat-font-family: "Anthropic Serif", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+/* 设置中的 Chat font 仅作用于用户与模型正文。 */
+.chat-font-content {
+  font-family: var(--chat-font-family);
+}
+
+/* 界面字体 = 系统默认（设置模态框 Interface font → System） */
+:root.font-interface-system {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    'PingFang SC', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  font-feature-settings: normal;
+}
+
+.integrated-terminal-surface {
+  color: hsl(var(--foreground));
+  background: hsl(var(--content-area));
+}
+
+.integrated-terminal-surface,
+.integrated-terminal-surface [data-codex-xterm],
+.integrated-terminal-surface .xterm,
+.integrated-terminal-surface .xterm-helper-textarea {
+  /*
+   * Windows 的 Electron app-region hitmask 不可靠地处理 drag 内嵌 no-drag。
+   * 终端整棵交互树必须显式排除，避免隐藏 textarea 看似聚焦却收不到键盘事件。
+   */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.integrated-terminal-surface .xterm,
+.integrated-terminal-surface .xterm-screen,
+.integrated-terminal-surface .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.integrated-terminal-surface .xterm-viewport {
+  scrollbar-color:
+    var(--vscode-scrollbarSlider-background)
+    transparent;
+  scrollbar-width: thin;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-track,
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground);
+}
+::selection {
+  background-color: var(--selection-background);
+  color: hsl(var(--foreground));
+}
+::-moz-selection {
+  background-color: var(--selection-background);
+  color: hsl(var(--foreground));
+}
+
+@layer base {
+  /* ===== 全主题统一的几何与阴影 token =====
+   * Claude 风格：更大的基准圆角（12px）+ 更柔的圆角上限，配合暖色底营造纸感；
+   * 按钮 sm/md/lg/xl 圆角全部由 --radius 派生（tailwind.config.js）；
+   * --shadow-* 五档语义阴影，由 :root（亮色）与 .dark（深色）分别定义，
+   * 深色态额外加 inset 顶高光来制造"浮起"感（弥补黑底缺乏自然阴影的问题）。
+   */
+  :root {
+    --radius: 0.75rem;
+    --radius-cap: 14px;
+    --radius-xl-extra: 4px;
+    --radius-2xl-extra: 8px;
+    --shadow-xs: 0 1px 1px 0 rgb(60 50 30 / 0.04);
+    --shadow-sm: 0 1px 2px 0 rgb(60 50 30 / 0.05), 0 1px 1px 0 rgb(60 50 30 / 0.04);
+    --shadow-md: 0 4px 8px -2px rgb(60 50 30 / 0.08), 0 2px 4px -1px rgb(60 50 30 / 0.05), 0 0 0 1px rgb(60 50 30 / 0.04);
+    --shadow-lg: 0 12px 24px -6px rgb(60 50 30 / 0.12), 0 4px 8px -2px rgb(60 50 30 / 0.06), 0 0 0 1px rgb(60 50 30 / 0.04);
+    --shadow-xl: 0 24px 48px -12px rgb(60 50 30 / 0.18), 0 12px 24px -6px rgb(60 50 30 / 0.08), 0 0 0 1px rgb(60 50 30 / 0.05);
+  }
+
+  .dark {
+    --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.5), inset 0 1px 0 0 hsl(0 0% 100% / 0.06);
+    --shadow-md: 0 6px 16px -4px rgb(0 0 0 / 0.55), 0 2px 4px 0 rgb(0 0 0 / 0.35), inset 0 1px 0 0 hsl(0 0% 100% / 0.08);
+    --shadow-lg: 0 16px 32px -8px rgb(0 0 0 / 0.6), 0 6px 12px -2px rgb(0 0 0 / 0.4), inset 0 1px 0 0 hsl(0 0% 100% / 0.10);
+    --shadow-xl: 0 32px 64px -16px rgb(0 0 0 / 0.7), 0 16px 32px -8px rgb(0 0 0 / 0.5), inset 0 1px 0 0 hsl(0 0% 100% / 0.12);
+  }
+}
+
+@layer base {
+  /* Electron 主窗口不应成为滚动容器；所有滚动必须停留在各自面板内。 */
+  html.proma-main-window,
+  html.proma-main-window body,
+  html.proma-main-window #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Draggable title bar region for Electron window */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* Left sidebar sits above the global titlebar layer, so it owns a stable top drag strip. */
+.sidebar-window-drag-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.sidebar-control-surface {
+  background-color: hsl(var(--sidebar-control-surface));
+  box-shadow: inset 0 0 0 0.5px hsl(var(--sidebar-control-stroke));
+}
+
+.sidebar-control-surface:hover {
+  background-color: hsl(var(--sidebar-control-surface-hover));
+}
+
+/* 侧栏直接使用主题表面色，避免混入 macOS 材质后偏灰或随桌面变色。 */
+.cursor-sidebar-surface {
+  background-color: hsl(var(--sidebar-surface));
+}
+
+/* 面板周围的留白也使用内容区底色，悬浮层次由描边与阴影体现。 */
+.agent-panel-surround {
+  background-color: hsl(var(--content-area));
+}
+
+.agent-panel-surface {
+  border: 1px solid hsl(var(--foreground) / 0.16);
+  border-radius: 11px;
+  box-shadow: 0 1px 3px hsl(0 0% 0% / 0.08), 0 2px 8px hsl(0 0% 0% / 0.04);
+}
+
+.dark .agent-panel-surface {
+  box-shadow: 0 1px 3px hsl(0 0% 0% / 0.25), 0 2px 8px hsl(0 0% 0% / 0.16);
+}
+
+/* 当前工作区选中指示：纯三角，颜色跟随工作区文字色 */
+.workspace-selected-triangle {
+  width: 0;
+  height: 0;
+  margin-left: 5px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-right: 7px solid currentColor;
+}
+
+/* Windows 自定义窗口控制按钮
+ *
+ * 可点击性关键点（解决 Windows 用户点击失效 / 需要双击的 bug）：
+ * 1. 容器本身就是 no-drag 矩形，不靠"在 drag 区里挖三个小洞"——避免 Chromium hitmask
+ *    在小矩形 + 高 DPI 缩放下的像素对齐误差。
+ * 2. AppShell 的 drag-region 在 Windows 上不再延伸到按钮区域（见 AppShell.tsx 的 right-[126px]），
+ *    drag 与 no-drag 区域彻底解耦，OS hitmask 不会再误判。
+ * 3. 按钮尺寸与位置使用整数 px，避免 125%/150%/175% DPI 下四舍五入收缩。
+ */
+.window-controls {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  height: 28px;
+  gap: 1px;
+}
+
+.window-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 28px;
+  border-radius: 4px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  border: none;
+  cursor: default;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.window-control-btn:hover {
+  background-color: hsl(var(--muted) / 0.35);
+  color: hsl(var(--foreground));
+}
+
+.window-control-btn:active {
+  background-color: hsl(var(--muted) / 0.5);
+}
+
+.window-control-close:hover {
+  background-color: #c42b1c;
+  color: #fff;
+}
+
+.window-control-close:active {
+  background-color: #a01d11;
+  color: #fff;
+}
+
+/* 活动文字保持轻量扫光，不用加载图标或背景卡片替代执行状态。 */
+@keyframes agent-status-shimmer {
+  0% {
+    background-position: -18px 0;
+  }
+
+  100% {
+    background-position: calc(100% + 18px) 0;
+  }
+}
+
+.agent-status-shimmer {
+  color: hsl(var(--muted-foreground));
+  background-color: hsl(var(--muted-foreground) / 0.72);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(0 0% 100% / 0.28) 28%,
+    hsl(0 0% 100% / 0.95) 50%,
+    hsl(0 0% 100% / 0.28) 72%,
+    transparent 100%
+  );
+  background-position: -18px 0;
+  background-size: 18px 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: agent-status-shimmer 2.8s linear infinite;
+}
+
+/* 兼容旧调用方，思考与工具状态采用同一个动画节奏。 */
+.agent-status-shimmer.agent-thinking-status-shimmer {
+  animation: agent-status-shimmer 2.8s linear infinite;
+}
+
+/* 思考为次级灰色文字；同时覆盖深色 prose-invert 的强调与标题颜色。 */
+.agent-thinking-content .prose,
+.agent-thinking-content .prose :is(h1, h2, h3, h4, h5, h6, strong, code, a, blockquote) {
+  color: hsl(var(--muted-foreground) / 0.72);
+}
+
+/* 活动/开局入场：仅淡入，不做 max-height 撑开，避免「正在思考/阶段行」上下跳 */
+@keyframes agent-activity-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* 兼容旧类名：统一落到纯淡入，避免历史引用再次引入高度动画 */
+@keyframes agent-processing-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes agent-activity-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.agent-activity-fade-in {
+  animation: agent-activity-fade-in 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+.agent-processing-enter {
+  animation: agent-processing-enter 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+.agent-activity-enter {
+  animation: agent-activity-enter 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+/* Cursor 风格思考内容：固定滚动布局，避免流式追加时影响外层排版。 */
+.agent-thinking-stream-surface {
+  contain: layout paint;
+}
+
+/*
+ * 思考内容遮罩：只要收到思考内容就以 75% 的聊天内容区背景色覆盖整个滚动视口；
+ * 最新一行不再例外保留，所有思考内容使用一致的遮罩透明度。
+ * 必须用 --content-area 而不是 --background：深色主题里侧栏背景更亮，
+ * 用 --background 会盖出一块灰幕，和输入区渐隐一样会出现色带。
+ * 绝对定位不会参与布局，避免流式追加造成高度跳动。
+ */
+.agent-thinking-stream-top-fade {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  background: hsl(var(--content-area) / 0.75);
+}
+
+.agent-thinking-stream-top-fade[data-active="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-shimmer {
+    color: hsl(var(--muted-foreground));
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    animation: none;
+  }
+
+  .agent-processing-enter,
+  .agent-activity-enter,
+  .agent-activity-fade-in {
+    animation: none;
+  }
+}
+
+:root.reduce-motion .agent-status-shimmer {
+  color: hsl(var(--muted-foreground));
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  animation: none;
+}
+
+:root.reduce-motion .agent-processing-enter,
+:root.reduce-motion .agent-activity-enter,
+:root.reduce-motion .agent-activity-fade-in {
+  animation: none;
+}
+
+/* ===== 工作区 Badge 文字颜色（追踪 workspace-item-selected 的字色） ===== */
+/* 默认主题（light / dark / system）兜底色：与原先 text-foreground/40 保持一致 */
+.workspace-badge {
+  color: hsl(var(--foreground) / 0.4);
+}
+
+/* ===== TabBar 背景 ===== */
+/* 默认背景 */
+.tabbar-bg {
+  position: relative;
+  background-color: hsl(var(--tabbar-surface));
+}
+
+.tabbar-bg::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background-color: hsl(var(--border) / 0.8);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.app-tab-active {
+  position: relative;
+  z-index: 1;
+  background-color: hsl(var(--content-area));
+}
+
+.app-tab-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background-color: hsl(var(--content-area));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.app-tab-inactive:hover {
+  background-color: hsl(var(--tab-surface) / 0.7);
+}
+
+.main-tabbar .app-tab-active {
+  background-color: transparent;
+  border-color: transparent !important;
+}
+
+.main-tabbar .app-tab-active::after {
+  left: 5px;
+  right: 5px;
+  height: 2px;
+  border-radius: 0;
+  background-color: hsl(var(--tab-indicator));
+  box-shadow: none;
+  z-index: 2;
+}
+
+.main-tabbar .app-tab-inactive:hover {
+  background-color: hsl(var(--tab-surface) / 0.42);
+}
+
+/* 现代界面：保留 rounded-full 的圆形/胶囊语义，只压低卡片、面板、气泡等大圆角。
+   任意值 rounded-[Npx] 不再压平——作为需要超出 cap 的显式逃生口（如 Claude 风格输入框）。 */
+:root:not(.ui-classic) [class*="rounded-lg"]:not([class*="rounded-full"]),
+:root:not(.ui-classic) [class*="rounded-xl"]:not([class*="rounded-full"]),
+:root:not(.ui-classic) [class*="rounded-2xl"]:not([class*="rounded-full"]),
+:root:not(.ui-classic) [class*="rounded-3xl"]:not([class*="rounded-full"]) {
+  border-radius: var(--radius-cap);
+}
+
+/* 经典界面：视觉规则对齐 upstream。 */
+:root.ui-classic {
+  --radius: 0.625rem;
+  --radius-xl-extra: 4px;
+  --radius-2xl-extra: 8px;
+}
+
+.ui-classic .tabbar-bg::after,
+.ui-classic .app-tab-active::after {
+  display: none;
+}
+
+.ui-classic .app-tab-active {
+  background-color: hsl(var(--tab-surface));
+  border-color: hsl(var(--border) / 0.5) !important;
+}
+
+.ui-classic .input-surface-card {
+  background-color: hsl(var(--background) / 0.7) !important;
+}
+
+.ui-classic .mode-switcher-track {
+  background-color: hsl(var(--sidebar-control-surface)) !important;
+}
+
+.ui-classic .sidebar-collapse-button {
+  background-color: hsl(var(--sidebar-control-surface)) !important;
+}
+
+.ui-classic .sidebar-collapse-button:hover {
+  background-color: hsl(var(--sidebar-control-surface-hover)) !important;
+}
+
+/* ===== 输入框段落紧凑行距（仅作用于输入框内的 tiptap 编辑器） ===== */
+.rich-text-input .tiptap p {
+  margin: 0;
+}
+
+/* ===== 输入框内代码块：按主题分色 ===== */
+/* 浅色主题：使用深色 code-bg + 浅色文字，与 AI 代码块一致 */
+.tiptap pre {
+  background-color: hsl(var(--code-bg));
+  color: hsl(0 0% 90%);
+}
+.tiptap pre code {
+  color: inherit;
+}
+
+/* 快速任务窗口：透明背景 + 无拖拽 */
+.quick-task-container {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* 细腻卡片阴影 */
+.shadow-minimal {
+  box-shadow:
+    0 1px 2px 0 rgb(0 0 0 / 0.03),
+    0 1px 3px 0 rgb(0 0 0 / 0.06);
+}
+
+/* 设置卡片样式：只有默认深色主题用透明，其他都用卡片背景 */
+.settings-card {
+  background: hsl(var(--card));
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.035);
+}
+.dark .settings-card {
+  background: transparent;
+  box-shadow: none;
+  border: 1px solid hsl(var(--border) / 0.3);
+}
+
+/* 应用内统一隐藏原生滚动条，但保留滚轮、触控板和键盘滚动。 */
+html,
+body,
+body * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+body *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 兼容局部滚动容器及历史类名。 */
+.scrollbar-none,
+.scrollbar-none > *,
+.scrollbar-thin,
+.scrollbar-thin > * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar,
+.scrollbar-none > *::-webkit-scrollbar,
+.scrollbar-thin::-webkit-scrollbar,
+.scrollbar-thin > *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 悬停才显示的滚动条：轨道一直占位，滑块平时透明、移入才显色。
+   不能用 scrollbar-width:none 或 hover 时改宽高 — Chromium 会把滚动条直接禁掉。 */
+html.hover-scrollbar-x,
+html.hover-scrollbar-xy,
+body.hover-scrollbar-x,
+body.hover-scrollbar-xy,
+body .hover-scrollbar-x,
+body .hover-scrollbar-xy {
+  overflow-x: auto !important;
+  scrollbar-gutter: auto;
+  scrollbar-width: thin !important;
+  scrollbar-color: transparent transparent !important;
+  -ms-overflow-style: auto !important;
+}
+html.hover-scrollbar-x,
+body.hover-scrollbar-x,
+body .hover-scrollbar-x {
+  overflow-y: hidden !important;
+}
+html.hover-scrollbar-xy,
+body.hover-scrollbar-xy,
+body .hover-scrollbar-xy {
+  overflow-y: auto !important;
+}
+html.hover-scrollbar-x:hover,
+html.hover-scrollbar-x:focus-within,
+html.hover-scrollbar-xy:hover,
+html.hover-scrollbar-xy:focus-within,
+body.hover-scrollbar-x:hover,
+body.hover-scrollbar-xy:hover,
+body .hover-scrollbar-x:hover,
+body .hover-scrollbar-x:focus-within,
+body .hover-scrollbar-xy:hover,
+body .hover-scrollbar-xy:focus-within {
+  scrollbar-color: hsl(var(--foreground) / 0.28) transparent !important;
+}
+html.hover-scrollbar-x::-webkit-scrollbar,
+body.hover-scrollbar-x::-webkit-scrollbar,
+body .hover-scrollbar-x::-webkit-scrollbar {
+  width: 0 !important;
+  height: 8px !important;
+  display: block !important;
+  background: transparent !important;
+}
+html.hover-scrollbar-xy::-webkit-scrollbar,
+body.hover-scrollbar-xy::-webkit-scrollbar,
+body .hover-scrollbar-xy::-webkit-scrollbar {
+  width: 8px !important;
+  height: 8px !important;
+  display: block !important;
+  background: transparent !important;
+}
+html.hover-scrollbar-x::-webkit-scrollbar-thumb,
+html.hover-scrollbar-xy::-webkit-scrollbar-thumb,
+body.hover-scrollbar-x::-webkit-scrollbar-thumb,
+body.hover-scrollbar-xy::-webkit-scrollbar-thumb,
+body .hover-scrollbar-x::-webkit-scrollbar-thumb,
+body .hover-scrollbar-xy::-webkit-scrollbar-thumb {
+  background: transparent !important;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.hover-scrollbar-x:hover::-webkit-scrollbar-thumb,
+html.hover-scrollbar-x:focus-within::-webkit-scrollbar-thumb,
+html.hover-scrollbar-xy:hover::-webkit-scrollbar-thumb,
+html.hover-scrollbar-xy:focus-within::-webkit-scrollbar-thumb,
+body.hover-scrollbar-x:hover::-webkit-scrollbar-thumb,
+body.hover-scrollbar-xy:hover::-webkit-scrollbar-thumb,
+body .hover-scrollbar-x:hover::-webkit-scrollbar-thumb,
+body .hover-scrollbar-x:focus-within::-webkit-scrollbar-thumb,
+body .hover-scrollbar-xy:hover::-webkit-scrollbar-thumb,
+body .hover-scrollbar-xy:focus-within::-webkit-scrollbar-thumb {
+  background: hsl(var(--foreground) / 0.28) !important;
+  background-clip: padding-box;
+}
+html.hover-scrollbar-x:hover::-webkit-scrollbar-thumb:hover,
+html.hover-scrollbar-xy:hover::-webkit-scrollbar-thumb:hover,
+body .hover-scrollbar-x:hover::-webkit-scrollbar-thumb:hover,
+body .hover-scrollbar-xy:hover::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--foreground) / 0.42) !important;
+  background-clip: padding-box;
+}
+html.hover-scrollbar-x::-webkit-scrollbar-track,
+html.hover-scrollbar-xy::-webkit-scrollbar-track,
+body .hover-scrollbar-x::-webkit-scrollbar-track,
+body .hover-scrollbar-xy::-webkit-scrollbar-track,
+html.hover-scrollbar-x::-webkit-scrollbar-corner,
+html.hover-scrollbar-xy::-webkit-scrollbar-corner,
+body .hover-scrollbar-x::-webkit-scrollbar-corner,
+body .hover-scrollbar-xy::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+
+/* use-stick-to-bottom 的实际滚动视口由 Content 在内部生成，不是根容器本身。 */
+.conversation-scroll-viewport {
+  scrollbar-gutter: auto !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* 设置 → Code → 对话宽度。消息和输入区共用变量，Agent 输入区保留既有 64px 外层补偿。 */
+.transcript-width-column {
+  max-width: var(--transcript-max-width, 768px);
+}
+
+.agent-transcript-width-column {
+  max-width: calc(var(--transcript-max-width, 768px) + 4rem);
+}
+.conversation-scroll-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 滚动区域上下渐隐遮罩 */
+.mask-fade-y {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 3%,
+    black 97%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 3%,
+    black 97%,
+    transparent 100%
+  );
+}
+
+/* Shiki 代码块样式 */
+.code-block-wrapper {
+  contain: content;
+}
+
+.code-block-wrapper pre.shiki {
+  /* 跟随设置中的自定义代码字体（--app-code-font），默认命中系统等宽字体 */
+  font-family: var(--app-code-font);
+  background-color: hsl(var(--code-bg)) !important;
+}
+
+.code-block-wrapper pre.shiki code {
+  display: block;
+  font-family: inherit;
+  background: transparent;
+  padding: 0;
+}
+
+/* 浅色主题代码块是深底，用偏浅的蓝灰选区承托白字，避免 Shiki token 内联色在选中后变黑。 */
+:root:not(.dark) :is(
+  .code-block-wrapper pre.shiki,
+  .tiptap pre
+)::selection,
+:root:not(.dark) :is(
+  .code-block-wrapper pre.shiki,
+  .tiptap pre
+) ::selection {
+  background-color: hsl(210 80% 62% / 0.32);
+  color: hsl(0 0% 98%) !important;
+  -webkit-text-fill-color: hsl(0 0% 98%);
+}
+
+:root:not(.dark) :is(
+  .code-block-wrapper pre.shiki,
+  .tiptap pre
+)::-moz-selection,
+:root:not(.dark) :is(
+  .code-block-wrapper pre.shiki,
+  .tiptap pre
+) ::-moz-selection {
+  background-color: hsl(210 80% 62% / 0.32);
+  color: hsl(0 0% 98%) !important;
+}
+
+/* 代码行：限制重排范围，GPU 合成优化 */
+.code-block-wrapper .line {
+  display: inline;
+  contain: none;
+}
+
+/* ===== Spinner 动画（SpinKit Grid）===== */
+
+@keyframes spinner {
+  0%, 70%, 100% {
+    transform: scale3D(1, 1, 1);
+  }
+  35% {
+    transform: scale3D(0, 0, 1);
+  }
+}
+
+.spinner {
+  width: 0.75em;
+  height: 0.75em;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 0.075em;
+}
+
+.spinner-cube {
+  background-color: currentColor;
+  animation: spinner 1.3s infinite ease-in-out;
+}
+
+/* 9 个 cube 的动画延迟（创建波浪效果） */
+.spinner-cube:nth-child(1) { animation-delay: 0.2s; }
+.spinner-cube:nth-child(2) { animation-delay: 0.3s; }
+.spinner-cube:nth-child(3) { animation-delay: 0.4s; }
+.spinner-cube:nth-child(4) { animation-delay: 0.1s; }
+.spinner-cube:nth-child(5) { animation-delay: 0.2s; }
+.spinner-cube:nth-child(6) { animation-delay: 0.3s; }
+.spinner-cube:nth-child(7) { animation-delay: 0s; }
+.spinner-cube:nth-child(8) { animation-delay: 0.1s; }
+.spinner-cube:nth-child(9) { animation-delay: 0.2s; }
+
+/* ===== Session 快速切换提示 ===== */
+.session-quick-switch-keycap {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  z-index: 8;
+  display: inline-flex;
+  height: 17px;
+  width: max-content;
+  align-items: center;
+  gap: 1px;
+  padding: 0 4px;
+  transform: translateY(-50%) scale(0.96);
+  border: 1px solid hsl(var(--primary) / 0.28);
+  border-radius: 5px;
+  background: hsl(var(--primary) / 0.10);
+  color: hsl(var(--primary) / 0.92);
+  box-shadow: 0 2px 6px hsl(var(--primary) / 0.10);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.session-quick-switch-modifier {
+  font-size: 16px;
+  line-height: 15px;
+  font-weight: 400;
+}
+
+.session-quick-switch-number {
+  font-size: 9px;
+  line-height: 11px;
+  font-weight: 400;
+}
+
+[data-session-switch-hints="true"] .session-quick-switch-row[data-quick-switch-label] .session-quick-switch-keycap {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+[data-session-switch-hints="true"] .session-quick-switch-row[data-quick-switch-label] {
+  padding-right: 44px;
+}
+
+[data-session-switch-hints="true"] .session-quick-switch-row[data-quick-switch-label] .session-item-actions,
+[data-session-switch-hints="true"] .session-quick-switch-row[data-quick-switch-label] .session-delegation-toggle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ===== 滚动进度条 — 适配所有主题（无轨道背景，仅滑块） ===== */
+
+/* 默认亮色主题 */
+.scroll-progress-thumb {
+  background-color: hsl(var(--foreground) / 0.14);
+}
+.scroll-progress-thumb:hover {
+  background-color: hsl(var(--foreground) / 0.25);
+}
+.scroll-progress-thumb-active {
+  background-color: hsl(var(--foreground) / 0.32) !important;
+}
+
+/* 默认深色主题 */
+.dark .scroll-progress-thumb {
+  background-color: hsl(var(--foreground) / 0.12);
+}
+.dark .scroll-progress-thumb:hover {
+  background-color: hsl(var(--foreground) / 0.22);
+}
+.dark .scroll-progress-thumb-active {
+  background-color: hsl(var(--foreground) / 0.30) !important;
+}
+
+/* ===== prose inline code：移除 Tailwind Typography 默认的前后反引号伪元素 ===== */
+.prose code::before,
+.prose code::after {
+  content: none;
+}
+
+/* ===== FileBrowser 层级引导线：默认隐藏，鼠标悬浮文件树时显示（VS Code 风格） ===== */
+.file-tree-guide {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.file-tree-guide-scope:hover .file-tree-guide,
+.file-tree-guide-scope:focus-within .file-tree-guide {
+  opacity: 1;
+}
+
+/* ===== FileBrowser sticky 目录行：每条 sticky 链路最末一行加一道软扩散阴影 =====
+   :has() 选择器只能向后看 sticky 行同一父级内的兄弟，所以 "栈最末" 实际语义是
+   "本节点子树内不再有更深的 sticky 子行"。
+   - 单棵展开链路：只有最深一层 sticky 子行有阴影（父行的子项容器内含子 sticky，被规则排除）。
+   - 多个平行展开（多个根目录同时打开）：每条链路各自一道阴影——这里把每棵独立树视为独立视觉单元。
+   要做到全局唯一一道阴影需要 JS 监听滚动 + 展开状态动态打标记，目前不做。 */
+.file-tree-row {
+  isolation: isolate;
+}
+
+.file-tree-sticky-row {
+  background-color: hsl(var(--content-area));
+}
+
+.file-tree-sticky-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: hsl(var(--content-area));
+}
+
+[data-sticky-row="true"]:not(:has(~ * [data-sticky-row="true"])) {
+  box-shadow: 0 2px 4px -1px hsl(var(--foreground) / 0.08);
+}
+
+/* ===== Office 内联预览 ===== */
+.office-preview-host {
+  min-height: 100%;
+  padding: 12px;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+
+.office-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.office-preview-title {
+  color: hsl(var(--foreground) / 0.72);
+  font-weight: 600;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.office-preview-notice,
+.office-empty {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.office-preview-notice {
+  border: 1px solid hsl(var(--border) / 0.45);
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.24);
+  padding: 8px 10px;
+}
+
+.office-sheet,
+.office-slide {
+  border: 1px solid hsl(var(--border) / 0.5);
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.72);
+  overflow: hidden;
+}
+
+.office-sheet h3,
+.office-slide h3 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.office-sheet h3 {
+  padding: 10px 12px;
+  border-bottom: 1px solid hsl(var(--border) / 0.45);
+}
+
+.office-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.office-table-wrap table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.office-table-wrap th,
+.office-table-wrap td {
+  max-width: 280px;
+  min-width: 72px;
+  border-right: 1px solid hsl(var(--border) / 0.35);
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+  padding: 6px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.office-table-wrap thead th,
+.office-row-heading {
+  position: sticky;
+  z-index: 1;
+  background: hsl(var(--muted) / 0.36);
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+
+.office-table-wrap thead th {
+  top: 0;
+}
+
+.office-row-heading {
+  left: 0;
+  min-width: 44px;
+  text-align: right;
+}
+
+.office-slide {
+  padding: 12px;
+}
+
+.office-slide-index {
+  margin-bottom: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.office-slide ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: hsl(var(--foreground) / 0.82);
+  line-height: 1.6;
+}
+
+.office-slide li + li {
+  margin-top: 4px;
+}
+
+/* ===== 语音输入浮窗拖动区域 ===== */
+.voice-dictation-drag-region {
+  -webkit-app-region: drag;
+  cursor: move;
+}
+
+.voice-dictation-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ===== Tiptap 可编辑表格样式 ===== */
+.ProseMirror table,
+.ProseMirror table.markdown-table {
+  border: 1px solid hsl(var(--foreground) / 0.22);
+  border-collapse: separate;
+  border-radius: 6px;
+  border-spacing: 0;
+  width: 100%;
+  margin: 0.75em 0;
+  overflow: hidden;
+  table-layout: auto;
+}
+
+.ProseMirror table colgroup {
+  display: table-column-group;
+}
+
+.ProseMirror table col {
+  display: table-column;
+}
+
+.ProseMirror table tr {
+  display: table-row;
+}
+
+.ProseMirror table td,
+.ProseMirror table th,
+.ProseMirror table.markdown-table td,
+.ProseMirror table.markdown-table th,
+.ProseMirror .md-td,
+.ProseMirror .md-th {
+  background-clip: padding-box;
+  border: 0 !important;
+  border-right: 1px solid hsl(var(--foreground) / 0.28) !important;
+  border-bottom: 1px solid hsl(var(--foreground) / 0.16) !important;
+  box-shadow: inset -1px 0 0 hsl(var(--background) / 0.9);
+  min-width: 48px;
+  padding: 4px 8px;
+  position: relative;
+  vertical-align: top;
+}
+
+.ProseMirror table.markdown-table td,
+.ProseMirror table.markdown-table th {
+  border-right-color: hsl(var(--foreground) / 0.28) !important;
+}
+
+.ProseMirror table td:not(:last-child)::after,
+.ProseMirror table th:not(:last-child)::after,
+.ProseMirror table.markdown-table td:not(:last-child)::after,
+.ProseMirror table.markdown-table th:not(:last-child)::after {
+  background: hsl(var(--foreground) / 0.28);
+  bottom: 0;
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  right: -1px;
+  top: 0;
+  width: 1px;
+}
+
+.ProseMirror table tr > :last-child,
+.ProseMirror table.markdown-table tr > :last-child {
+  border-right: 0 !important;
+  box-shadow: none;
+}
+
+.ProseMirror table tr:last-child > *,
+.ProseMirror table.markdown-table tr:last-child > * {
+  border-bottom: 0 !important;
+}
+
+.ProseMirror table th,
+.ProseMirror table.markdown-table th {
+  background-color: hsl(var(--muted) / 0.5);
+  font-weight: 600;
+  text-align: left;
+}
+
+.ProseMirror table tr:nth-child(even) td,
+.ProseMirror table.markdown-table tr:nth-child(even) td {
+  background-color: hsl(var(--muted) / 0.15);
+}
+
+.ProseMirror .selectedCell::after {
+  z-index: 2;
+  position: absolute;
+  content: '';
+  inset: 0;
+  background: hsl(var(--primary) / 0.12);
+  pointer-events: none;
+}
+
+.ProseMirror:not([contenteditable='true']) .selectedCell::after {
+  display: none;
+}
+
+/* ===== Tiptap 可编辑代码块 ===== */
+.ProseMirror pre.markdown-code-block {
+  background: hsl(var(--muted) / 0.45) !important;
+  color: hsl(var(--foreground)) !important;
+  font-family: var(--app-code-font) !important;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.ProseMirror pre.markdown-code-block code,
+.ProseMirror pre.markdown-code-block code * {
+  background: transparent !important;
+  font: inherit;
+  padding: 0 !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+.ProseMirror pre.markdown-code-block .hljs-comment,
+.ProseMirror pre.markdown-code-block .hljs-quote {
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+
+.ProseMirror pre.markdown-code-block .hljs-keyword,
+.ProseMirror pre.markdown-code-block .hljs-selector-tag,
+.ProseMirror pre.markdown-code-block .hljs-subst,
+.ProseMirror pre.markdown-code-block .hljs-doctag,
+.ProseMirror pre.markdown-code-block .hljs-template-tag,
+.ProseMirror pre.markdown-code-block .hljs-template-variable {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.ProseMirror pre.markdown-code-block .hljs-string,
+.ProseMirror pre.markdown-code-block .hljs-regexp,
+.ProseMirror pre.markdown-code-block .hljs-title,
+.ProseMirror pre.markdown-code-block .hljs-section,
+.ProseMirror pre.markdown-code-block .hljs-name,
+.ProseMirror pre.markdown-code-block .hljs-selector-id,
+.ProseMirror pre.markdown-code-block .hljs-selector-class {
+  color: hsl(150 55% 34%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-string,
+.dark .ProseMirror pre.markdown-code-block .hljs-regexp,
+.dark .ProseMirror pre.markdown-code-block .hljs-title,
+.dark .ProseMirror pre.markdown-code-block .hljs-section,
+.dark .ProseMirror pre.markdown-code-block .hljs-name,
+.dark .ProseMirror pre.markdown-code-block .hljs-selector-id,
+.dark .ProseMirror pre.markdown-code-block .hljs-selector-class {
+  color: hsl(150 55% 62%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-number,
+.ProseMirror pre.markdown-code-block .hljs-literal,
+.ProseMirror pre.markdown-code-block .hljs-variable,
+.ProseMirror pre.markdown-code-block .hljs-template-variable,
+.ProseMirror pre.markdown-code-block .hljs-attribute,
+.ProseMirror pre.markdown-code-block .hljs-symbol,
+.ProseMirror pre.markdown-code-block .hljs-bullet {
+  color: hsl(24 80% 44%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-number,
+.dark .ProseMirror pre.markdown-code-block .hljs-literal,
+.dark .ProseMirror pre.markdown-code-block .hljs-variable,
+.dark .ProseMirror pre.markdown-code-block .hljs-template-variable,
+.dark .ProseMirror pre.markdown-code-block .hljs-attribute,
+.dark .ProseMirror pre.markdown-code-block .hljs-symbol,
+.dark .ProseMirror pre.markdown-code-block .hljs-bullet {
+  color: hsl(32 90% 64%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-built_in,
+.ProseMirror pre.markdown-code-block .hljs-type,
+.ProseMirror pre.markdown-code-block .hljs-class .hljs-title,
+.ProseMirror pre.markdown-code-block .hljs-function .hljs-title,
+.ProseMirror pre.markdown-code-block .hljs-title.function_ {
+  color: hsl(210 70% 45%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-built_in,
+.dark .ProseMirror pre.markdown-code-block .hljs-type,
+.dark .ProseMirror pre.markdown-code-block .hljs-class .hljs-title,
+.dark .ProseMirror pre.markdown-code-block .hljs-function .hljs-title,
+.dark .ProseMirror pre.markdown-code-block .hljs-title.function_ {
+  color: hsl(210 90% 70%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-attr,
+.ProseMirror pre.markdown-code-block .hljs-property,
+.ProseMirror pre.markdown-code-block .hljs-params,
+.ProseMirror pre.markdown-code-block .hljs-selector-attr,
+.ProseMirror pre.markdown-code-block .hljs-selector-pseudo {
+  color: hsl(270 55% 48%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-attr,
+.dark .ProseMirror pre.markdown-code-block .hljs-property,
+.dark .ProseMirror pre.markdown-code-block .hljs-params,
+.dark .ProseMirror pre.markdown-code-block .hljs-selector-attr,
+.dark .ProseMirror pre.markdown-code-block .hljs-selector-pseudo {
+  color: hsl(275 72% 74%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-operator,
+.ProseMirror pre.markdown-code-block .hljs-punctuation,
+.ProseMirror pre.markdown-code-block .hljs-meta,
+.ProseMirror pre.markdown-code-block .hljs-link {
+  color: hsl(190 72% 34%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-operator,
+.dark .ProseMirror pre.markdown-code-block .hljs-punctuation,
+.dark .ProseMirror pre.markdown-code-block .hljs-meta,
+.dark .ProseMirror pre.markdown-code-block .hljs-link {
+  color: hsl(190 78% 65%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-tag,
+.ProseMirror pre.markdown-code-block .hljs-tag .hljs-name {
+  color: hsl(345 72% 44%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-tag,
+.dark .ProseMirror pre.markdown-code-block .hljs-tag .hljs-name {
+  color: hsl(345 82% 70%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-addition {
+  color: hsl(145 58% 32%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-addition {
+  color: hsl(145 62% 64%);
+}
+
+.ProseMirror pre.markdown-code-block .hljs-deletion {
+  color: hsl(0 68% 48%);
+}
+
+.dark .ProseMirror pre.markdown-code-block .hljs-deletion {
+  color: hsl(0 78% 72%);
+}
+
+.ProseMirror .markdown-code-edit-layer {
+  background: transparent !important;
+  font-family: var(--app-code-font) !important;
+  font-size: 13px !important;
+  font-variant-ligatures: none;
+  font-kerning: none;
+  letter-spacing: 0 !important;
+  line-height: 1.6 !important;
+  tab-size: 2;
+  white-space: pre !important;
+}
+
+.ProseMirror .markdown-code-edit-layer code {
+  background: transparent !important;
+  color: hsl(var(--foreground)) !important;
+  font: inherit !important;
+  letter-spacing: 0 !important;
+  line-height: inherit !important;
+  padding: 0 !important;
+  tab-size: inherit;
+  white-space: pre !important;
+  -webkit-text-fill-color: currentColor;
+  caret-color: hsl(var(--foreground));
+}
+
+.ProseMirror .markdown-code-edit-layer ::selection {
+  background: hsl(var(--primary) / 0.22);
+}
+
+/* ===== Session Mini Map ===== */
+.session-minimap-popover {
+  transform-origin: left center;
+  will-change: transform, opacity;
+}
+
+.session-minimap-popover-enter {
+  animation: session-minimap-popover-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.session-minimap-popover-exit {
+  animation: session-minimap-popover-out 90ms ease-in both;
+}
+
+.session-minimap-content-enter {
+  animation: session-minimap-content-in 140ms ease-out both;
+}
+
+@keyframes session-minimap-popover-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-4px, 2px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes session-minimap-popover-out {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(-3px, 1px, 0) scale(0.99);
+  }
+}
+
+@keyframes session-minimap-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== 草稿区：待办清单排版 =====
+ * TaskList/TaskItem 扩展带 not-prose，默认丢失了 prose 的行距/间距，且 flex 布局下
+ * 空待办项的正文 div 会塌缩到 0 宽导致光标无处落脚。以下规则仅作用于草稿区
+ * （.scratch-pad-editor），把待办项的行距、间距、字号对齐到正文与无序列表，
+ * 并保证空项也能落下光标。不改共享的扩展配置，故不影响 diff 预览等其它用到该扩展处。
+ */
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] {
+  margin: 0.75em 0;
+  padding-left: 0;
+  list-style: none;
+}
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+  margin: 0.25em 0;
+}
+/* 正文撑开：空待办项也有宽度，光标可正常显示与闪烁 */
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 待办项段落行距对齐正文（prose-sm 约 1.71） */
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li > div > p {
+  margin: 0;
+  line-height: 1.7142857;
+}
+/* 勾选后置灰划线 —— 用语义色，跟随各主题 */
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li[data-checked="true"] > div {
+  text-decoration: line-through;
+  color: hsl(var(--muted-foreground) / 0.6);
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+/* 复选框与首行文字对齐 */
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li > label {
+  flex: 0 0 auto;
+  margin-top: 0.28em;
+  user-select: none;
+}
+.scratch-pad-editor .ProseMirror ul[data-type="taskList"] > li > label > input {
+  cursor: pointer;
+}
+
+/* Scratch Pad 图片 resize handle */
+.scratch-pad-image-resize-container {
+  display: inline-flex;
+  max-width: 100%;
+}
+.scratch-pad-image-resize-wrapper {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.scratch-pad-image-resize-handle {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: hsl(var(--primary));
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  cursor: nwse-resize;
+}
+.scratch-pad-image-resize-wrapper:hover .scratch-pad-image-resize-handle,
+.scratch-pad-image-resizing .scratch-pad-image-resize-handle {
+  opacity: 1;
+}
+.scratch-pad-image-resizing {
+  user-select: none;
+}
+
+/* Gapcursor: 在 atom block 节点前后显示光标 */
+.ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: relative;
+}
+.ProseMirror-gapcursor::after {
+  content: '';
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid currentColor;
+  animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+}
+@keyframes ProseMirror-cursor-blink {
+  to { visibility: hidden; }
+}
+.ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+
+/* 对话时间线：只在用户展开/收起时做短过渡，不为流式增量反复播放入场。 */
+.agent-timeline-disclosure[data-state='open'] {
+  animation: agent-timeline-expand 160ms ease-out;
+}
+.agent-timeline-disclosure[data-state='closed'] {
+  animation: agent-timeline-collapse 120ms ease-in;
+}
+@keyframes agent-timeline-expand {
+  from { height: 0; opacity: 0; }
+  to { height: var(--radix-collapsible-content-height); opacity: 1; }
+}
+@keyframes agent-timeline-collapse {
+  from { height: var(--radix-collapsible-content-height); opacity: 1; }
+  to { height: 0; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-timeline-disclosure { animation: none !important; }
+}
+
+:root.reduce-motion .agent-timeline-disclosure { animation: none !important; }

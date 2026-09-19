@@ -1,0 +1,83 @@
+# AGENTS.md
+
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+
+**重要提示：**
+- 当功能发生变化时，请保持此文件和 `README.md` 同步更新。请更新文档以反映当前状态，但是需要经过我的允许后再修改。
+- 所有的注释和日志优先采用中文，保留必要的专业术语部分。
+- 所有的依赖包的安装都要先进行搜索，综合判断依赖采用的版本，而不是默认采用某个版本。
+- 状态管理上我们全部采用 Jotai 来实现。
+- 这是个开源项目，本地存储优先，善用配置文件优于大部分默认采用 localstorage，不采用本地数据库方案。
+- 保证充分的组件化以及人类的可读性，每次完成改动后都要思考这一点，运行@code-simplifier 来简化优化代码，保持简单直接不过渡设计的风格。
+- 在 UI 设计上采用更现代的方案，UI 组件推荐采用 ShadcnUI，在合适的情况下，用卡片和阴影取代边框，用符合主题的饱满色彩，设置界面要设置背景，为未来做不同主题留下空间。
+- 采用 BDD 行为驱动开发的方案。
+
+## 当前项目与架构
+
+开发显示名 Xcodes；新名称未指定前不自行改名。桌面迁入自有 CLI 仓库的 desktop/，原目录保留。CLI 根工程与 desktop 分别保留依赖、锁文件和构建边界。
+
+Renderer（React/Jotai）→ typed preload/IPC → Electron Main → 鉴权 loopback HTTP/WebSocket Local Service → stdio NDJSON 自有 CLI。
+
+- CLI 是唯一模型循环、工具、原生权限、计划、子代理、后台任务和原生历史的执行者。
+- Local Service 只负责每会话进程、控制转发、事件关联、快照和重连，不新建第二套业务调度系统。
+- Main 负责桌面配置、显示历史、统计、应用定时任务、PTY、浏览器和系统服务；Renderer 只管理展示和交互。
+- 正式 Runtime 唯一为 local-cli。不得恢复 Pi 依赖、worker、桥接或旁路模型入口。旧 Hermes/旧 Runtime 数据仅用于历史兼容读取，不据旧任务图续跑模型。
+- 默认 Local，支持本机 worktree；不增加远端会话或常驻 daemon。
+
+## 主要模块
+
+- apps/local-service：独立服务和 CLI 进程、journal、快照、请求幂等。
+- packages/desktop-protocol：共享请求、事件、能力与会话协议。
+- apps/electron/src/main/lib/local-service：Supervisor、客户端、Runtime Adapter、消息、任务、上下文和配置映射。
+- apps/electron/src/main/lib/builtin-mcp：将内存工具定义物化为会话专属鉴权 HTTP transport。
+- packages/shared：桌面类型、IPC 常量、事件投影；packages/session-core：共享会话能力。
+- apps/electron/src/renderer/atoms：Jotai 状态；全局执行监听不能随页面卸载销毁。
+- apps/electron/src/renderer/components：消息、工具活动、审批、Plan、任务、文件/终端/Diff 和设置。
+
+新增 IPC 同步修改 shared 类型/常量、Main handler、Preload、Renderer。新增协议同时覆盖服务与真实 CLI，不能仅有 UI 按钮或 Main 保存字段。
+
+## 执行与数据约束
+
+- 请求/事件携带 session、run、generation、sequence 及相关 request/tool/task/message ID；重放不得重复落盘或重复执行发送、批准和工具操作。
+- Permission、AskUser、ExitPlan 分别建模，按会话隔离并支持取消/恢复。真实 Auto 不可用必须说明，不降级为 Bypass。
+- effort 与 thinking budget 分开；清空配置必须到达 CLI，动态切换以实际确认状态为准。
+- 原生 transcript 与桌面 JSONL 显示投影分别保存。不得改写原生文件伪造 resume/fork/rewind；文件回退独立确认。
+- 旧历史仅作为显示或明确标注的参考上下文，不重放旧工具/审批。迁移保留原目录；失败时禁止退回旧目录写入。
+- 新旧数据通过 desktop-data-format.json 标记；默认 ~/xcodes-dev 与 ~/xcodes 隔离，测试使用全新 XCODES_DATA_ROOT。
+- 模型 provider 决定协议，不用 modelId/Base URL/key 猜测；凭据/协议变化按能力热更新或受控重建。
+- JSON 配置、JSONL 日志，无本地数据库。凭据 safeStorage 加密，诊断不输出凭据、消息、thinking 或完整环境变量。
+- 内置 MCP 的 load/execute/Zod 对象只能在 Main 运行，必须经本地鉴权 endpoint 暴露给独立 CLI。
+
+## UI 行为契约
+
+- 按用户截图和官方实际采样还原；thinking、正文、工具、任务只展示真实原生事件，不拼接虚构状态。
+- 文件、终端、改动不是跨功能 Tab；Plan 与后台任务可上下堆叠，关闭一个后重新分配高度。
+- 面板 X 只隐藏，不终止终端/任务/CLI。终端按会话保留多个实例；切会话默认收起面板。
+- worktree 是勾选项，首次发送前准备正确 cwd，失败保留草稿。Runtime、PTY、文件和 Diff 共享会话目录。
+- PR/提交下拉只选择，点击主按钮才发送；斜线目录同时覆盖命令和 Skills。
+- 不保留假设置或空点击。功能变化同时验证中文/英文、浅/深色、空/加载/失败态、标题栏拖动区域和焦点。
+
+## 构建与验证
+
+使用 Bun。desktop 内 `bun run typecheck`、`bun run electron:build`；CLI 根 `bun run build`、`bun run desktop:check`、`bun run desktop:dev`、`bun run desktop:build`。两工程不共享安装边界。
+
+测试按 BDD 验证真实行为：消息投影、用量、控制结算、任务、压缩、目录隔离、重连去重，以及 Main→Service→fake/真实 CLI。真实 CLI 测试使用隔离项目和本地 Provider fixture。
+
+- 不在用户业务仓库测试写文件、Git 回退、worktree 清理。
+- 不以真实外部消息发送、发布或真实联系人作为默认测试。
+- 构建、安装、启动、功能、视觉、跨平台分别记录；未验证不得标完成。
+- 跨进程集成测试与容易污染模块 mock 的单元测试分别运行。
+- 逐阶段证据见 docs/reference/desktop-rebuild-implementation-status.md 与 desktop-entrypoint-acceptance.md。
+
+## 打包
+
+Main/Preload 使用 esbuild，Renderer 使用 Vite。electron 与 node-pty external；普通依赖尽量打入 Main。包内 Bun、Local Service、执行 CLI、会话辅助 CLI、完整 chunks/资源位于 ASAR 外的固定 local-runtime 路径；正式包不得回退系统 Bun/Node 或源码目录。
+
+node-pty 必须匹配 Electron ABI。macOS arm64/x64、Windows x64 各自构建和运行验证，不能用异架构静态检查替代目标宿主运行。退出必须结束受管 CLI/Service/PTY，不留下孤儿进程。签名、公证和公开发布不是默认测试动作。
+
+## 代码与版本
+
+- 禁止 any；对象优先 interface，仅类型引用使用 import type；注释/日志中文，保留专业术语。
+- TypeScript strict，保持组件化和可读性；按可用工具进行简化审查，不能声称调用不存在的 code-simplifier。
+- 提交代码时递增受影响包 patch 版本。修改 default-skills/<skill>/ 内容必须同时递增其 SKILL.md frontmatter version。
+- 保留 @proma/* 内部包标识和必要旧数据字段，不以品牌清理为由破坏兼容读取。

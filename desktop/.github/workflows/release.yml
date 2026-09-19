@@ -1,0 +1,328 @@
+# GitHub Actions: Xcodes 自动构建与发布
+#
+# 推送 v* tag（首版为 v0.0.1）后构建 macOS arm64、macOS x64 和 Windows x64。
+# 所有检查与构建成功后才创建 Draft Release；完整资产校验通过后再正式发布。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 发布 tag（例如 v0.0.1）
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  RELEASE_REPOSITORY: maochiy/Xcode
+  # CI 默认使用硬链接；mac.icon 与 extraResources/icon.icns 同路径时会 EEXIST。
+  # 使用普通复制，与本地打包行为一致，同时避免签名修改影响源文件。
+  USE_HARD_LINKS: 'false'
+
+jobs:
+  validate-release:
+    name: 校验发布配置
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: 校验仓库、版本与应用名
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node .github/scripts/release-flow.mjs validate-config \
+            --tag "${RELEASE_TAG}" \
+            --repository "${GITHUB_REPOSITORY}")
+          echo "✅ 发布配置校验通过: Xcodes v${VERSION}"
+
+  quality-check:
+    name: 类型与发布流程测试
+    needs: validate-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
+
+      - name: 类型检查
+        run: bun run typecheck
+
+      - name: 发布流程测试
+        run: bun test ./.github/scripts/release-flow.test.ts
+
+  build-macos:
+    name: macOS ${{ matrix.arch }}
+    needs: quality-check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+    env:
+      MAC_CERTS: ${{ secrets.MAC_CERTS }}
+      MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
+
+      - name: 导入 macOS 签名证书
+        if: env.MAC_CERTS != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${RUNNER_TEMP}/build.keychain"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          echo "${MAC_CERTS}" | base64 --decode > "${RUNNER_TEMP}/cert.p12"
+          security import "${RUNNER_TEMP}/cert.p12" \
+            -P "${MAC_CERTS_PASSWORD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
+          security list-keychain -d user -s "${KEYCHAIN_PATH}"
+          rm -f "${RUNNER_TEMP}/cert.p12"
+
+      - name: 构建 Electron 应用
+        run: bun run electron:build
+
+      - name: 打包 macOS ${{ matrix.arch }}
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MAC_CERTS}" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "未配置 macOS 签名证书，将生成未签名产物"
+          fi
+
+          bunx electron-builder \
+            --mac \
+            --${{ matrix.arch }} \
+            --publish never
+        working-directory: apps/electron
+
+      - name: 校验并整理 macOS 资产
+        shell: bash
+        run: |
+          node .github/scripts/release-flow.mjs stage-build \
+            --tag "${RELEASE_TAG}" \
+            --platform mac \
+            --arch "${{ matrix.arch }}" \
+            --out apps/electron/out \
+            --dest ".release-assets/mac-${{ matrix.arch }}"
+
+      - name: 保存 macOS 资产
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-mac-${{ matrix.arch }}
+          path: .release-assets/mac-${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  build-windows:
+    name: Windows x64
+    needs: quality-check
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
+
+      - name: 构建 Electron 应用
+        run: bun run electron:build
+
+      - name: 打包 Windows x64
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if (-not $env:CSC_LINK) {
+            $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+            Write-Host "未配置 Windows 签名证书，将生成未签名产物"
+          }
+
+          bunx electron-builder `
+            --win `
+            --x64 `
+            --publish never
+        working-directory: apps/electron
+
+      - name: 校验并整理 Windows 资产
+        shell: bash
+        run: |
+          node .github/scripts/release-flow.mjs stage-build \
+            --tag "${RELEASE_TAG}" \
+            --platform windows \
+            --arch x64 \
+            --out apps/electron/out \
+            --dest .release-assets/windows-x64
+
+      - name: 保存 Windows 资产
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: .release-assets/windows-x64/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    name: 发布 GitHub Release
+    needs: [validate-release, quality-check, build-macos, build-windows]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: 下载全部构建资产
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: 生成更新清单并校验完整资产
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .github/scripts/release-flow.mjs prepare-release \
+            --tag "${RELEASE_TAG}" \
+            --assets release-assets
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: 创建 Draft、上传并正式发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${RELEASE_TAG}"
+          REPO="${RELEASE_REPOSITORY}"
+
+          EXISTING_RELEASE=$(gh api "repos/${REPO}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${TAG}\")" | head -n 1)
+          if [ -n "${EXISTING_RELEASE}" ]; then
+            RELEASE_ID=$(jq -r '.id' <<< "${EXISTING_RELEASE}")
+            IS_DRAFT=$(jq -r '.draft' <<< "${EXISTING_RELEASE}")
+            if [ "${IS_DRAFT}" != "true" ]; then
+              echo "ERROR: ${TAG} 已正式发布，拒绝覆盖"
+              exit 1
+            fi
+            echo "删除上次失败遗留的 Draft Release: ${TAG}"
+            gh api --method DELETE "repos/${REPO}/releases/${RELEASE_ID}"
+          fi
+
+          CREATE_ARGS=(
+            "${TAG}"
+            --repo "${REPO}"
+            --verify-tag
+            --draft
+            --title "Xcodes ${TAG}"
+          )
+          NOTES_FILE=".github/release-notes/${TAG}.md"
+          if [ -f "${NOTES_FILE}" ]; then
+            CREATE_ARGS+=(--notes-file "${NOTES_FILE}")
+          fi
+
+          gh release create "${CREATE_ARGS[@]}"
+          gh release upload "${TAG}" release-assets/* \
+            --repo "${REPO}" \
+            --clobber
+
+          RELEASE_JSON=$(gh api "repos/${REPO}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${TAG}\")" | head -n 1)
+          RELEASE_ID=$(jq -r '.id' <<< "${RELEASE_JSON}")
+          IS_DRAFT=$(jq -r '.draft' <<< "${RELEASE_JSON}")
+          if [ "${IS_DRAFT}" != "true" ]; then
+            echo "ERROR: 资产校验前 Release 已不是 Draft"
+            exit 1
+          fi
+
+          gh api "repos/${REPO}/releases/${RELEASE_ID}/assets" --paginate \
+            --jq '.[].name' > remote-assets.txt
+          node .github/scripts/release-flow.mjs verify-list \
+            --tag "${TAG}" \
+            --file remote-assets.txt
+
+          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
+            -F "name=Xcodes ${TAG}" \
+            -F draft=false \
+            -F prerelease=false
+
+          echo "✅ GitHub Release 已正式发布: ${REPO} ${TAG}"

@@ -45,6 +45,7 @@ import { isAgentSwarmsEnabled } from 'src/utils/agentSwarmsEnabled.js';
 import { getCwd, runWithCwdOverride } from 'src/utils/cwd.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
+import { areDynamicWorkflowsEnabled } from 'src/utils/dynamicWorkflows.js';
 import { AbortError, errorMessage, toError } from 'src/utils/errors.js';
 import type { CacheSafeParams } from 'src/utils/forkedAgent.js';
 import { lazySchema } from 'src/utils/lazySchema.js';
@@ -339,6 +340,7 @@ export const AgentTool = buildTool({
   ) {
     const startTime = Date.now();
     const model = isCoordinatorMode() ? undefined : modelParam;
+    const dynamicWorkflowsEnabled = areDynamicWorkflowsEnabled();
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
@@ -686,7 +688,10 @@ export const AgentTool = buildTool({
       isBuiltInAgent: isBuiltInAgent(selectedAgent),
       startTime,
       agentType: selectedAgent.agentType,
-      isAsync: (run_in_background === true || selectedAgent.background === true) && !isBackgroundTasksDisabled,
+      isAsync:
+        dynamicWorkflowsEnabled &&
+        (run_in_background === true || selectedAgent.background === true) &&
+        !isBackgroundTasksDisabled,
     };
 
     // Use inline env check instead of coordinatorModule to avoid circular
@@ -707,6 +712,7 @@ export const AgentTool = buildTool({
     const assistantForceAsync = feature('KAIROS') ? appState.kairosEnabled : false;
 
     const shouldRunAsync =
+      dynamicWorkflowsEnabled &&
       (run_in_background === true ||
         selectedAgent.background === true ||
         isCoordinator ||
@@ -1465,7 +1471,7 @@ export const AgentTool = buildTool({
     return `${prefix}${i.prompt}`;
   },
   isConcurrencySafe() {
-    return true;
+    return areDynamicWorkflowsEnabled();
   },
   userFacingName,
   userFacingNameBackgroundColor,

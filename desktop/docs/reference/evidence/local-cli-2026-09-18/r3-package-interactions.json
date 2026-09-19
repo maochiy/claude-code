@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-18T07:27:34.804Z",
+  "result": "passed",
+  "packageApp": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app",
+  "runtime": {
+    "bunPath": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/vendor/bun/bun",
+    "serviceEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/service/index.js",
+    "cliEntry": "/Volumes/code/code/agent/claude-code/desktop/apps/electron/out/local-cli-20260918-r3/mac-arm64/Xcodes.app/Contents/Resources/local-runtime/cli/cli-bun.js"
+  },
+  "streaming": {
+    "sendCount": 1,
+    "providerRequestCount": 1,
+    "textDeltaCount": 3,
+    "firstTextLatencyMs": 223,
+    "terminalLatencyMs": 541,
+    "firstTextSeq": 12,
+    "terminalSeq": 21,
+    "firstTextBeforeTerminal": true
+  },
+  "readTool": {
+    "target": "/var/folders/rq/vmkb4phx4xdghf18387qj8540000gn/T/xcodes-r3-loopback-y4Jgli/workspace/isolated-read.txt",
+    "assistantCallCount": 1,
+    "providerRequestCount": 2,
+    "markerObservedInToolResult": true,
+    "pendingControlCount": 0,
+    "terminalLatencyMs": 790
+  },
+  "permission": {
+    "denyRequestsSettled": 1,
+    "denyDuplicateSettlementsRejected": 1,
+    "deniedTargetsCreated": 0,
+    "denyProviderRequestCount": 2,
+    "allowRequestsSettled": 1,
+    "allowDuplicateSettlementsRejected": 1,
+    "allowedTargetsCreated": 1,
+    "allowProviderRequestCount": 2
+  },
+  "askUser": {
+    "structuredQuestionCount": 2,
+    "structuredAnswerReturnedToModel": true,
+    "structuredDuplicateSettlementRejected": true,
+    "cancellationReturnedToModel": true,
+    "cancellationDuplicateSettlementRejected": true
+  },
+  "plan": {
+    "targetAbsentBeforeFeedback": true,
+    "targetAbsentBeforeApproval": true,
+    "feedbackReturnedAndPlanRevised": true,
+    "firstDuplicateSettlementRejected": true,
+    "secondDuplicateSettlementRejected": true,
+    "providerRequestCount": 4,
+    "approvedWriteCallCount": 1,
+    "approvedWriteContent": "exit-plan-approved"
+  },
+  "cleanup": {
+    "servicePid": 50512,
+    "cliPids": [
+      50513,
+      50565,
+      50588,
+      50609,
+      50640,
+      50666,
+      50702
+    ],
+    "serviceExitCode": 0,
+    "serviceExitSignal": "none",
+    "serviceAliveAfterExit": false,
+    "cliPidsAliveAfterExit": []
+  },
+  "reusableInteractionCoverage": [
+    "apps/local-service/test/native-interactions.integration.ts: ExitPlan feedback/revise/accept",
+    "apps/local-service/test/native-interactions.integration.ts: default permission deny/allow",
+    "apps/local-service/test/native-interactions.integration.ts: AskUser structured answer/cancel",
+    "apps/local-service/test/native-interactions.integration.ts: plan allow/deny"
+  ]
+}

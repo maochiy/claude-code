@@ -1,0 +1,495 @@
+/**
+ * Agent 权限服务
+ *
+ * 核心职责：
+ * - 实现 canUseTool 回调（供 SDK query 使用）
+ * - 管理 pending 权限请求（Promise + Map 模式）
+ * - 维护会话级白名单
+ * - 工具/命令分类判断
+ *
+ * 参考 Craft Agents OSS 的 Promise + Map 异步等待模式。
+ */
+
+import { randomUUID } from 'node:crypto'
+import type {
+  PromaPermissionMode,
+  PermissionRequest,
+  DangerLevel,
+  AskUserRequest,
+  AgentInteractionRequestContext,
+  AgentInteractionSettlement,
+  CreatedAgentInteractionRequestMetadata,
+} from '@proma/shared'
+import {
+  SAFE_TOOLS,
+  isSafeBashCommand,
+  isDangerousCommand,
+  hasDangerousStructure,
+} from '@proma/shared'
+import {
+  createInteractionRequestMetadata,
+  createInteractionSettlement,
+} from './agent-interaction-lifecycle'
+
+/** SDK PermissionBehavior */
+type PermissionBehavior = 'allow' | 'deny'
+
+/** SDK PermissionUpdateDestination */
+type PermissionUpdateDestination = 'userSettings' | 'projectSettings' | 'localSettings' | 'session' | 'cliArg'
+
+/** SDK 权限规则值 */
+interface PermissionRuleValue {
+  toolName: string
+  ruleContent?: string
+}
+
+/** SDK PermissionUpdate（匹配 SDK 0.2.63） */
+export type PermissionUpdate = {
+  type: 'addRules' | 'replaceRules' | 'removeRules'
+  rules: PermissionRuleValue[]
+  behavior: PermissionBehavior
+  destination: PermissionUpdateDestination
+} | {
+  type: 'setMode'
+  mode: string
+  destination: PermissionUpdateDestination
+} | {
+  type: 'addDirectories' | 'removeDirectories'
+  directories: string[]
+  destination: PermissionUpdateDestination
+}
+
+/** SDK PermissionDecisionClassification（匹配 SDK 0.2.120） */
+type PermissionDecisionClassification = 'user_temporary' | 'user_permanent' | 'user_reject'
+
+/** SDK PermissionResult（匹配 SDK 0.2.120） */
+export type PermissionResult = {
+  behavior: 'allow'
+  updatedInput?: Record<string, unknown>
+  updatedPermissions?: PermissionUpdate[]
+  toolUseID?: string
+  decisionClassification?: PermissionDecisionClassification
+} | {
+  behavior: 'deny'
+  message: string
+  interrupt?: boolean
+  toolUseID?: string
+  decisionClassification?: PermissionDecisionClassification
+}
+
+/** canUseTool 回调的 options 参数（匹配 SDK CanUseTool） */
+export interface CanUseToolOptions {
+  signal: AbortSignal
+  suggestions?: PermissionUpdate[]
+  blockedPath?: string
+  decisionReason?: string
+  decisionReasonType?: string
+  classifierApprovable?: boolean
+  toolUseID: string
+  agentID?: string
+  title?: string
+  displayName?: string
+  description?: string
+  /** 仅宿主内置工具定义产生；外部服务和模型自报标记不得用于授权。 */
+  mcpReadOnly?: boolean
+}
+
+/** 待处理的权限请求 */
+interface PendingPermission {
+  resolve: (result: PermissionResult) => void
+  request: PermissionRequest & CreatedAgentInteractionRequestMetadata
+  signal: AbortSignal
+  abortListener: () => void
+  onSettled?: (settlement: AgentInteractionSettlement) => void
+}
+
+export interface PermissionLifecycleCallbacks {
+  requestContext?: AgentInteractionRequestContext
+  onPending?: (request: PermissionRequest) => void
+  onSettled?: (settlement: AgentInteractionSettlement) => void
+}
+
+/** 会话级白名单 */
+interface SessionWhitelist {
+  /** 总是允许的工具名（如 'Write', 'Edit'） */
+  allowedTools: Set<string>
+  /** 总是允许的 Bash 基础命令（如 'git push', 'npm install'） */
+  allowedBashCommands: Set<string>
+}
+
+/**
+ * Agent 权限服务
+ *
+ * 单例模式，管理所有会话的权限状态。
+ */
+export class AgentPermissionService {
+  /** 待处理的权限请求 Map（requestId → PendingPermission） */
+  private pendingPermissions = new Map<string, PendingPermission>()
+
+  /** 会话级白名单 Map（sessionId → SessionWhitelist） */
+  private sessionWhitelists = new Map<string, SessionWhitelist>()
+
+  /**
+   * 创建 canUseTool 回调（auto 模式及 escalation 场景使用）
+   *
+   * SDK 的 auto 模式内置 classifier 自动处理大多数权限决策，仅在 classifier 无法判断时
+   * 才调用此回调（escalation）。返回的函数签名匹配 SDK 的 CanUseTool 类型。
+   */
+  createCanUseTool(
+    sessionId: string,
+    sendToRenderer: (request: PermissionRequest) => void,
+    askUserHandler?: (sessionId: string, input: Record<string, unknown>, signal: AbortSignal, sendToRenderer: (request: AskUserRequest) => void) => Promise<PermissionResult>,
+    sendAskUserToRenderer?: (request: AskUserRequest) => void,
+    lifecycle?: PermissionLifecycleCallbacks,
+  ): (toolName: string, input: Record<string, unknown>, options: CanUseToolOptions) => Promise<PermissionResult> {
+    return async (toolName, input, options) => {
+      // AskUserQuestion 拦截：委托给交互式问答服务
+      if (toolName === 'AskUserQuestion' && askUserHandler && sendAskUserToRenderer) {
+        return askUserHandler(sessionId, input, options.signal, sendAskUserToRenderer)
+      }
+
+      const allow = (): PermissionResult => ({ behavior: 'allow' as const, updatedInput: input })
+
+      // Worker（子代理）的工具调用自动批准，避免 UI 等待导致超时死锁
+      if (options.agentID) {
+        return allow()
+      }
+
+      // 会话白名单检查（用户之前选择了"始终允许"）
+      if (this.isWhitelisted(sessionId, toolName, input)) return allow()
+
+      // auto 模式本地 classifier：只读工具（Read/Glob/Grep/WebSearch/WebFetch 及只读 Bash 命令）自动放行
+      // 原因：CLI 的 --permission-prompt-tool stdio 会把每次 tool 调用都转发给 canUseTool，
+      // SDK 的 auto classifier 对只读操作未必真的放行，这里做本地兜底避免用户被无意义的审批打扰
+      if (this.isReadOnlyTool(toolName, input)) return allow()
+
+      if (options.signal.aborted) {
+        return { behavior: 'deny', message: '操作已中止' }
+      }
+
+      // 需要询问用户：构建请求并发送到 UI
+      const request = this.buildPermissionRequest(sessionId, toolName, input, options, lifecycle?.requestContext)
+
+      return new Promise<PermissionResult>((resolve) => {
+        const abortListener = (): void => {
+          this.settlePermission(
+            request.requestId,
+            { behavior: 'deny', message: '操作已中止' },
+            'aborted',
+          )
+        }
+        this.pendingPermissions.set(request.requestId, {
+          resolve,
+          request,
+          signal: options.signal,
+          abortListener,
+          onSettled: lifecycle?.onSettled,
+        })
+        options.signal.addEventListener('abort', abortListener, { once: true })
+        try {
+          lifecycle?.onPending?.(request)
+          sendToRenderer(request)
+        } catch {
+          this.settlePermission(
+            request.requestId,
+            { behavior: 'deny', message: '无法发起权限确认' },
+            'delivery_failed',
+          )
+        }
+      })
+    }
+  }
+
+  private settlePermission(
+    requestId: string,
+    result: PermissionResult,
+    outcome: AgentInteractionSettlement['outcome'],
+  ): string | null {
+    const pending = this.pendingPermissions.get(requestId)
+    if (!pending) return null
+    this.pendingPermissions.delete(requestId)
+    pending.signal.removeEventListener('abort', pending.abortListener)
+    const behavior = result.behavior
+    try {
+      pending.onSettled?.(createInteractionSettlement(
+        pending.request,
+        'permission',
+        outcome,
+        behavior,
+      ))
+    } catch {
+      console.warn('[Agent 权限] 同步请求终态失败，请求仍正常结束。')
+    } finally {
+      pending.resolve(result)
+    }
+    return pending.request.sessionId
+  }
+
+  /**
+   * 响应权限请求（由 IPC handler 调用）
+   *
+   * @returns 对应的 sessionId，用于向渲染进程发送 resolved 事件；未找到请求时返回 null
+   */
+  respondToPermission(requestId: string, behavior: 'allow' | 'deny', alwaysAllow: boolean): string | null {
+    const pending = this.pendingPermissions.get(requestId)
+    if (!pending) return null
+    if (behavior !== 'allow' && behavior !== 'deny') {
+      throw new Error('权限响应行为无效')
+    }
+    if (typeof alwaysAllow !== 'boolean') {
+      throw new Error('权限响应的会话授权标记无效')
+    }
+
+    const sessionId = pending.request.sessionId
+
+    // "总是允许"选项：加入会话白名单
+    if (alwaysAllow && behavior === 'allow') {
+      this.addToWhitelist(sessionId, pending.request.toolName, pending.request.toolInput)
+    }
+
+    return this.settlePermission(
+      requestId,
+      behavior === 'allow'
+        ? { behavior: 'allow' as const, updatedInput: pending.request.toolInput }
+        : { behavior: 'deny' as const, message: '用户拒绝了此操作' },
+      behavior === 'allow' ? 'allowed' : 'denied',
+    )
+  }
+
+  /**
+   * 清除指定会话的所有待处理请求（会话结束或中止时调用）
+   */
+  clearSessionPending(sessionId: string): void {
+    for (const [requestId, pending] of this.pendingPermissions) {
+      if (pending.request.sessionId === sessionId) {
+        this.settlePermission(
+          requestId,
+          { behavior: 'deny' as const, message: '会话已结束' },
+          'cancelled',
+        )
+      }
+    }
+  }
+
+  /**
+   * 获取当前所有待处理的权限请求（用于渲染进程重载后恢复状态）
+   */
+  getPendingRequests(): PermissionRequest[] {
+    return [...this.pendingPermissions.values()]
+      .map((p) => p.request)
+      .sort(compareInteractionRequests)
+  }
+
+  /**
+   * 清除指定会话的白名单（会话结束时调用）
+   */
+  clearSessionWhitelist(sessionId: string): void {
+    this.sessionWhitelists.delete(sessionId)
+  }
+
+  // ===== 工具分类判断 =====
+
+  /**
+   * 判断工具是否为只读操作（智能模式下自动允许）
+   */
+  private isReadOnlyTool(toolName: string, input: Record<string, unknown>): boolean {
+    // 安全工具白名单
+    if (SAFE_TOOLS.includes(toolName)) return true
+
+    // Bash 工具：检查命令是否匹配安全模式
+    if (toolName === 'Bash') {
+      const command = typeof input.command === 'string' ? input.command : ''
+      return isSafeBashCommand(command)
+    }
+
+    return false
+  }
+
+  /**
+   * 判断工具/命令是否在会话白名单中
+   */
+  private isWhitelisted(sessionId: string, toolName: string, input: Record<string, unknown>): boolean {
+    const whitelist = this.sessionWhitelists.get(sessionId)
+    if (!whitelist) return false
+
+    // 非 Bash 工具：检查工具名是否在白名单中
+    if (toolName !== 'Bash') {
+      return whitelist.allowedTools.has(toolName)
+    }
+
+    // Bash 工具：即使基础命令在白名单中，也要重新检查完整命令的安全性
+    const command = typeof input.command === 'string' ? input.command : ''
+    if (hasDangerousStructure(command)) return false
+    if (isDangerousCommand(command)) return false
+    const baseCommand = this.extractBaseCommand(command)
+    return whitelist.allowedBashCommands.has(baseCommand)
+  }
+
+  /**
+   * 将工具/命令加入会话白名单
+   */
+  private addToWhitelist(sessionId: string, toolName: string, input: Record<string, unknown>): void {
+    const whitelist = this.getOrCreateWhitelist(sessionId)
+
+    if (toolName !== 'Bash') {
+      whitelist.allowedTools.add(toolName)
+    } else {
+      const command = typeof input.command === 'string' ? input.command : ''
+      const baseCommand = this.extractBaseCommand(command)
+      if (baseCommand) {
+        whitelist.allowedBashCommands.add(baseCommand)
+      }
+    }
+  }
+
+  /**
+   * 获取或创建会话白名单
+   */
+  private getOrCreateWhitelist(sessionId: string): SessionWhitelist {
+    const existing = this.sessionWhitelists.get(sessionId)
+    if (existing) return existing
+
+    const whitelist: SessionWhitelist = {
+      allowedTools: new Set(),
+      allowedBashCommands: new Set(),
+    }
+    this.sessionWhitelists.set(sessionId, whitelist)
+    return whitelist
+  }
+
+  /**
+   * 提取 Bash 命令的基础命令（用于白名单匹配）
+   *
+   * 提取前两个词（如 "git push"、"npm install"）或第一个词（如 "ls"）。
+   */
+  private extractBaseCommand(command: string): string {
+    const parts = command.trim().split(/\s+/)
+    // 两词组合命令（git push, npm install 等）
+    if (parts.length >= 2 && ['git', 'npm', 'bun', 'yarn', 'pnpm'].includes(parts[0]!)) {
+      return `${parts[0]} ${parts[1]}`
+    }
+    return parts[0] ?? ''
+  }
+
+  /**
+   * 构建权限请求对象
+   */
+  private buildPermissionRequest(
+    sessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    options: CanUseToolOptions,
+    requestContext?: AgentInteractionRequestContext,
+  ): PermissionRequest & CreatedAgentInteractionRequestMetadata {
+    const command = toolName === 'Bash' && typeof input.command === 'string'
+      ? input.command
+      : undefined
+
+    return {
+      requestId: randomUUID(),
+      sessionId,
+      ...createInteractionRequestMetadata(sessionId, {
+        ...requestContext,
+        toolUseId: requestContext?.toolUseId ?? options.toolUseID,
+      }),
+      toolName,
+      toolInput: input,
+      description: this.buildDescription(toolName, input),
+      command,
+      dangerLevel: this.assessDangerLevel(toolName, input),
+      decisionReason: options.decisionReason,
+      decisionReasonType: options.decisionReasonType,
+      classifierApprovable: options.classifierApprovable,
+      sdkDisplayName: options.displayName,
+      sdkTitle: options.title,
+      sdkDescription: options.description,
+    }
+  }
+
+  /**
+   * 生成人类可读的操作描述
+   */
+  private buildDescription(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Bash':
+        return typeof input.command === 'string'
+          ? `执行命令: ${input.command.slice(0, 200)}`
+          : '执行 Bash 命令'
+      case 'Write':
+        return typeof input.file_path === 'string'
+          ? `写入文件: ${input.file_path}`
+          : '写入文件'
+      case 'Edit':
+        return typeof input.file_path === 'string'
+          ? `编辑文件: ${input.file_path}`
+          : '编辑文件'
+      case 'NotebookEdit':
+        return typeof input.notebook_path === 'string'
+          ? `编辑 Notebook: ${input.notebook_path}`
+          : '编辑 Notebook'
+      case 'Task':
+        return typeof input.description === 'string'
+          ? `启动子任务: ${input.description}`
+          : '启动子任务'
+      case 'REPL':
+        return typeof input.description === 'string'
+          ? `执行 REPL: ${input.description}`
+          : '执行 REPL 代码'
+      case 'Workflow':
+        return typeof input.name === 'string'
+          ? `运行工作流: ${input.name}`
+          : '运行工作流'
+      case 'ScheduleWakeup':
+        return typeof input.reason === 'string'
+          ? `安排会话唤醒: ${input.reason}`
+          : '安排会话唤醒'
+      case 'Monitor':
+        return typeof input.description === 'string'
+          ? `启动监控任务: ${input.description}`
+          : '启动监控任务'
+      case 'PushNotification':
+        return typeof input.message === 'string'
+          ? `发送通知: ${input.message}`
+          : '发送通知'
+      default:
+        return `使用工具: ${toolName}`
+    }
+  }
+
+  /**
+   * 评估操作的危险等级
+   */
+  private assessDangerLevel(toolName: string, input: Record<string, unknown>): DangerLevel {
+    if (toolName === 'Bash') {
+      const command = typeof input.command === 'string' ? input.command : ''
+      if (isDangerousCommand(command)) return 'dangerous'
+      if (hasDangerousStructure(command)) return 'normal'
+      return 'normal'
+    }
+
+    // 文件写入操作默认为 normal
+    if (['Write', 'Edit', 'NotebookEdit'].includes(toolName)) return 'normal'
+
+    // Task 工具默认为 normal
+    if (toolName === 'Task') return 'normal'
+
+    // 新 SDK 的后台/定时/通知/脚本能力都可能产生会话外影响，需要明确审批
+    if (['REPL', 'Workflow', 'ScheduleWakeup', 'Monitor', 'PushNotification', 'CronCreate', 'CronDelete', 'RemoteTrigger'].includes(toolName)) {
+      return 'normal'
+    }
+
+    return 'normal'
+  }
+}
+
+function compareInteractionRequests(
+  a: PermissionRequest,
+  b: PermissionRequest,
+): number {
+  if (a.sequence !== undefined && b.sequence !== undefined) return a.sequence - b.sequence
+  if (a.createdAt !== undefined && b.createdAt !== undefined) return a.createdAt - b.createdAt
+  return 0
+}
+
+/** 全局权限服务实例 */
+export const permissionService = new AgentPermissionService()

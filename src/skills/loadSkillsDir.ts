@@ -657,7 +657,7 @@ export const getSkillDirCommands = memoize(
     // commands-dir). Load ONLY explicit --add-dir paths. Bundled skills
     // register separately. skillsLocked still applies — --bare is not a
     // policy bypass.
-    if (isBareMode()) {
+    if (isBareMode() && !process.argv.includes('--catalog-only')) {
       if (
         (additionalDirs.length === 0 && additionalSkillDirs.length === 0) ||
         !projectSettingsEnabled

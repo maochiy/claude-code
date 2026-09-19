@@ -5,6 +5,10 @@ import {
   type WorkflowToolDescriptor,
 } from '@claude-code-best/workflow-engine'
 import { buildTool, type Tool } from '../Tool.js'
+import {
+  areDynamicWorkflowsEnabled,
+  constrainWorkflowConcurrency,
+} from '../utils/dynamicWorkflows.js'
 import { getWorkflowService } from './service.js'
 
 /**
@@ -33,16 +37,19 @@ function buildWorkflowTool(): Tool {
     inputSchema: workflowInputSchema,
     isEnabled: () => descriptor().isEnabled(),
     isReadOnly: input => descriptor().isReadOnly(input),
-    isConcurrencySafe: () => true,
+    isConcurrencySafe: () => areDynamicWorkflowsEnabled(),
     async description() {
       return descriptor().description()
     },
     async prompt() {
-      return descriptor().prompt()
+      const prompt = await descriptor().prompt()
+      return areDynamicWorkflowsEnabled()
+        ? prompt
+        : `${prompt}\n\nThis session permits one subagent at a time. maxConcurrency is fixed to 1.`
     },
     async call(input, context, canUseTool, parentMessage, onProgress) {
       const result = await descriptor().call(
-        input,
+        constrainWorkflowConcurrency(input),
         context,
         canUseTool,
         parentMessage,

@@ -25,6 +25,8 @@ import {
   SDKPostTurnSummaryMessageSchema,
   SDKStreamlinedTextMessageSchema,
   SDKStreamlinedToolUseSummaryMessageSchema,
+  SDKTaskSnapshotSchema,
+  SDKTodoSnapshotSchema,
   SDKUserMessageSchema,
   SlashCommandSchema,
 } from './coreSchemas.js'
@@ -66,6 +68,7 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
       systemPrompt: z.string().optional(),
       appendSystemPrompt: z.string().optional(),
       agents: z.record(z.string(), AgentDefinitionSchema()).optional(),
+      additionalSkillDirectories: z.array(z.string()).optional(),
       promptSuggestions: z.boolean().optional(),
       agentProgressSummaries: z.boolean().optional(),
     })
@@ -150,6 +153,28 @@ export const SDKControlSetMaxThinkingTokensRequestSchema = lazySchema(() =>
     })
     .describe(
       'Sets the maximum number of thinking tokens for extended thinking.',
+    ),
+)
+
+export const SDKControlSetEffortRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_effort'),
+      effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable(),
+    })
+    .describe(
+      'Sets the session reasoning effort override. Null clears the override and restores the model default.',
+    ),
+)
+
+export const SDKControlSetAutoCompactRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_auto_compact'),
+      enabled: z.boolean().nullable(),
+    })
+    .describe(
+      'Sets the session auto-compact override. Null clears the override and restores configured behavior.',
     ),
 )
 
@@ -298,6 +323,8 @@ export const SDKControlGetContextUsageResponseSchema = lazySchema(() =>
           cache_read_input_tokens: z.number(),
         })
         .nullable(),
+      cacheHitRate: z.number().optional(),
+      cacheThreshold: z.number().optional(),
     })
     .describe(
       'Breakdown of current context window usage by category (system prompt, tools, messages, etc.).',
@@ -431,6 +458,28 @@ export const SDKControlReloadPluginsResponseSchema = lazySchema(() =>
     ),
 )
 
+export const SDKControlSetSkillDirectoriesRequestSchema = lazySchema(() =>
+  z
+    .object({
+      subtype: z.literal('set_skill_directories'),
+      directories: z.array(z.string()),
+    })
+    .describe(
+      'Replaces the host-provided Skill directories for this session and refreshes the command catalog.',
+    ),
+)
+
+export const SDKControlSetSkillDirectoriesResponseSchema = lazySchema(() =>
+  z
+    .object({
+      directories: z.array(z.string()),
+      commands: z.array(SlashCommandSchema()),
+    })
+    .describe(
+      'Normalized Skill directories and the refreshed slash-command catalog.',
+    ),
+)
+
 export const SDKControlMcpReconnectRequestSchema = lazySchema(() =>
   z
     .object({
@@ -457,6 +506,87 @@ export const SDKControlStopTaskRequestSchema = lazySchema(() =>
       task_id: z.string(),
     })
     .describe('Stops a running task.'),
+)
+
+export const SDKControlGetTasksRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('get_tasks'),
+    task_id: z.string().optional(),
+  }),
+)
+
+export const SDKControlGetTasksResponseSchema = lazySchema(() =>
+  z.object({
+    captured_at: z.number(),
+    tasks: z.array(SDKTaskSnapshotSchema()),
+    todos: z.array(SDKTodoSnapshotSchema()),
+  }),
+)
+
+export const SDKControlGetTaskOutputRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('get_task_output'),
+    task_id: z.string(),
+    cursor: z.number().int().nonnegative().optional(),
+    byte_limit: z
+      .number()
+      .int()
+      .min(4)
+      .max(8 * 1024 * 1024)
+      .optional(),
+  }),
+)
+
+export const SDKControlGetTaskOutputResponseSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string(),
+    content: z.string(),
+    cursor: z.number(),
+    next_cursor: z.number(),
+    bytes_read: z.number(),
+    total_bytes: z.number(),
+    eof: z.boolean(),
+    task: SDKTaskSnapshotSchema().optional(),
+  }),
+)
+
+export const SDKControlGetSessionTranscriptRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('get_session_transcript'),
+    snapshot_id: z.string().optional(),
+    cursor: z.number().int().nonnegative().optional(),
+    limit: z.number().int().min(1).max(1000).optional(),
+  }),
+)
+
+export const SDKControlGetSubagentTranscriptRequestSchema = lazySchema(() =>
+  z.object({
+    subtype: z.literal('get_subagent_transcript'),
+    task_id: z.string(),
+  }),
+)
+
+export const SDKControlGetSubagentTranscriptResponseSchema = lazySchema(() =>
+  z.object({
+    task_id: z.string(),
+    agent_id: z.string(),
+    messages: z.array(z.unknown()),
+    content_replacements: z.array(z.unknown()),
+    message_count: z.number(),
+  }),
+)
+
+export const SDKControlStopTaskResponseSchema = lazySchema(() =>
+  z.object({
+    stopped: z.literal(true),
+    result: z.object({
+      task_id: z.string(),
+      task_type: z.string(),
+      status: z.enum(['pending', 'running', 'completed', 'failed', 'killed']),
+      command: z.string().optional(),
+    }),
+    task: SDKTaskSnapshotSchema().optional(),
+  }),
 )
 
 export const SDKControlApplyFlagSettingsRequestSchema = lazySchema(() =>
@@ -554,6 +684,8 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlSetPermissionModeRequestSchema(),
     SDKControlSetModelRequestSchema(),
     SDKControlSetMaxThinkingTokensRequestSchema(),
+    SDKControlSetEffortRequestSchema(),
+    SDKControlSetAutoCompactRequestSchema(),
     SDKControlMcpStatusRequestSchema(),
     SDKControlGetContextUsageRequestSchema(),
     SDKHookCallbackRequestSchema(),
@@ -563,9 +695,14 @@ export const SDKControlRequestInnerSchema = lazySchema(() =>
     SDKControlSeedReadStateRequestSchema(),
     SDKControlMcpSetServersRequestSchema(),
     SDKControlReloadPluginsRequestSchema(),
+    SDKControlSetSkillDirectoriesRequestSchema(),
     SDKControlMcpReconnectRequestSchema(),
     SDKControlMcpToggleRequestSchema(),
     SDKControlStopTaskRequestSchema(),
+    SDKControlGetTasksRequestSchema(),
+    SDKControlGetTaskOutputRequestSchema(),
+    SDKControlGetSubagentTranscriptRequestSchema(),
+    SDKControlGetSessionTranscriptRequestSchema(),
     SDKControlApplyFlagSettingsRequestSchema(),
     SDKControlGetSettingsRequestSchema(),
     SDKControlElicitationRequestSchema(),

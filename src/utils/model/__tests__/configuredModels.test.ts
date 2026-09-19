@@ -86,6 +86,32 @@ describe('configured model catalog', () => {
     ).toHaveLength(6)
   })
 
+  test('loads explicit Responses model catalogs as OpenAI models', () => {
+    const models = [{ id: 'responses-model' }]
+    expect(
+      getInitialConfiguredModels('openai', {
+        modelType: 'openai-responses',
+        models,
+      }),
+    ).toEqual(models)
+    expect(
+      getInitialConfiguredModels('openai', {
+        modelType: 'openai-responses-oauth',
+        models,
+      }),
+    ).toEqual(models)
+  })
+
+  test('keeps Anthropic configured models after explicit OpenAI routing support', () => {
+    const models = [{ id: 'anthropic-model' }]
+    expect(
+      getInitialConfiguredModels('anthropic', {
+        modelType: 'anthropic',
+        models,
+      }),
+    ).toEqual(models)
+  })
+
   test('migrates the legacy alias default to its exact model ID', () => {
     process.env.OPENAI_DEFAULT_OPUS_MODEL = 'gpt-5.6-luna'
     const models = [{ id: 'glm-5.2' }, { id: 'gpt-5.6-luna' }]

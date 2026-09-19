@@ -1,0 +1,339 @@
+/**
+ * ExitPlanModeBanner — Agent ExitPlanMode 计划审批横幅
+ *
+ * 仿照 Claude Code 的计划审批 UI，提供 3 个选项：
+ * 1. 批准并按会话原审批模式执行
+ * 2. 拒绝计划 — deny
+ * 3. 提供反馈 — 自由输入修改意见
+ *
+ * 键盘：↑↓ 选择，Enter 确认，数字键快速选择。
+ */
+
+import * as React from 'react'
+import { useAtom, useAtomValue } from 'jotai'
+import {
+  Check,
+  X,
+  MessageSquare,
+  Send,
+  FileText,
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
+import { cn } from '@/lib/utils'
+import {
+  agentDefaultPermissionModeAtom,
+  agentPermissionModeMapAtom,
+  allPendingExitPlanRequestsAtom,
+  sessionPersistedPermissionModeAtom,
+} from '@/atoms/agent-atoms'
+import { normalizeApprovalMode } from '@/lib/agent-plan-mode'
+import { PROMA_PERMISSION_MODE_CONFIG } from '@proma/shared'
+import type { ExitPlanModeAction, ExitPlanAllowedPrompt, PromaApprovalMode } from '@proma/shared'
+
+/** 选项定义 */
+interface PlanOption {
+  action: ExitPlanModeAction
+  label: string
+  description: string
+  icon: React.ComponentType<{ className?: string }>
+  destructive?: boolean
+}
+
+const PLAN_OPTIONS: PlanOption[] = [
+  {
+    action: 'approve',
+    label: '批准并执行计划',
+    description: '按当前审批模式继续执行',
+    icon: Check,
+  },
+  {
+    action: 'deny',
+    label: '拒绝计划',
+    description: '直接拒绝，Agent 不会执行计划',
+    icon: X,
+    destructive: true,
+  },
+  {
+    action: 'feedback',
+    label: '提供修改意见',
+    description: '告诉 Agent 需要调整什么',
+    icon: MessageSquare,
+  },
+]
+
+interface ExitPlanModeBannerProps {
+  sessionId: string
+  requestId?: string
+}
+
+export function ExitPlanModeBanner({ sessionId, requestId }: ExitPlanModeBannerProps): React.ReactElement | null {
+  const [allRequests, setAllRequests] = useAtom(allPendingExitPlanRequestsAtom)
+  const permissionModeMap = useAtomValue(agentPermissionModeMapAtom)
+  const persistedPermissionMode = useAtomValue(sessionPersistedPermissionModeAtom(sessionId))
+  const defaultPermissionMode = useAtomValue(agentDefaultPermissionModeAtom)
+  const approvalMode = normalizeApprovalMode(
+    permissionModeMap.get(sessionId) ?? persistedPermissionMode ?? defaultPermissionMode,
+  )
+  const requests = allRequests.get(sessionId) ?? []
+  const [focusedIdx, setFocusedIdx] = React.useState(0)
+  const [showFeedback, setShowFeedback] = React.useState(false)
+  const [feedbackText, setFeedbackText] = React.useState('')
+  const [submitting, setSubmitting] = React.useState(false)
+
+  const request = requestId
+    ? requests.find((item) => item.requestId === requestId) ?? null
+    : requests[0] ?? null
+
+  // ===== Refs：确保 keydown handler 始终读取最新值，消除闭包过期问题 =====
+  const focusedIdxRef = React.useRef(focusedIdx)
+  focusedIdxRef.current = focusedIdx
+  const feedbackTextRef = React.useRef(feedbackText)
+  feedbackTextRef.current = feedbackText
+  const handleActionRef = React.useRef<((action: ExitPlanModeAction) => void) | null>(null)
+
+  // 重置状态
+  React.useEffect(() => {
+    setFocusedIdx(0)
+    setShowFeedback(false)
+    setFeedbackText('')
+  }, [request?.requestId])
+
+  const handleAction = async (action: ExitPlanModeAction): Promise<void> => {
+    if (submitting || !request) return
+    setSubmitting(true)
+    try {
+      await window.electronAPI.respondExitPlanMode({
+        requestId: request.requestId,
+        action,
+        approvalMode: action === 'approve' ? approvalMode : undefined,
+        feedback: action === 'feedback' ? feedbackText.trim() : undefined,
+      })
+      // 从队列移除
+      setAllRequests((prev) => {
+        const map = new Map(prev)
+        const current = map.get(sessionId) ?? []
+        const newValue = current.filter((r) => r.requestId !== request.requestId)
+        if (newValue.length === 0) map.delete(sessionId)
+        else map.set(sessionId, newValue)
+        return map
+      })
+    } catch (error) {
+      console.error('[ExitPlanModeBanner] 响应失败:', error)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  handleActionRef.current = handleAction
+
+  /** 关闭等同于拒绝计划，让 CCB/模型继续处理拒绝结果。 */
+  const handleDismiss = (): void => {
+    void handleAction('deny')
+  }
+
+  // 键盘导航：只在 requestId 变化时重建 handler，内部通过 ref 读取最新值
+  React.useEffect(() => {
+    if (!request) return
+
+    const handleKeyDown = (e: KeyboardEvent): void => {
+      const curFocusIdx = focusedIdxRef.current
+
+      // 反馈输入框内：仅 Enter 提交（输入法组合中跳过）
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault()
+          if (feedbackTextRef.current.trim()) {
+            handleActionRef.current?.('feedback')
+          }
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          setShowFeedback(false)
+          setFocusedIdx(2)
+        }
+        return
+      }
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const count = PLAN_OPTIONS.length
+        const next = e.key === 'ArrowDown'
+          ? (curFocusIdx + 1) % count
+          : (curFocusIdx - 1 + count) % count
+        setFocusedIdx(next)
+      } else if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault()
+        const option = PLAN_OPTIONS[curFocusIdx]
+        if (option) {
+          if (option.action === 'feedback') {
+            setShowFeedback(true)
+          } else {
+            handleActionRef.current?.(option.action)
+          }
+        }
+      } else if (e.key >= '1' && e.key <= '3') {
+        e.preventDefault()
+        const idx = Number(e.key) - 1
+        const option = PLAN_OPTIONS[idx]
+        if (option) {
+          setFocusedIdx(idx)
+          if (option.action === 'feedback') {
+            setShowFeedback(true)
+          } else {
+            handleActionRef.current?.(option.action)
+          }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [request?.requestId])
+
+  if (!request) return null
+
+  return (
+    <div
+      className={cn(
+        inputCardClass,
+        'w-full overflow-hidden bg-card animate-in slide-in-from-bottom-2 duration-200',
+      )}
+    >
+      {/* 头部 */}
+      <div className="px-4 pt-3.5 pb-2">
+        <div className="flex items-center gap-2 mb-1">
+          <FileText className="size-4 text-primary" />
+          <span className="text-sm font-medium text-foreground flex-1">Agent 计划待审批</span>
+          <button
+            type="button"
+            className="size-5 flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/60 transition-colors"
+            onClick={handleDismiss}
+            title="拒绝当前计划"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Agent 已完成计划，请选择如何继续
+        </p>
+      </div>
+
+      {/* allowedPrompts 展示 */}
+      {request.allowedPrompts.length > 0 && (
+        <AllowedPromptsList prompts={request.allowedPrompts} />
+      )}
+
+      {/* 与普通权限审批一致的 Codex 风格纵向选项 */}
+      <div className="px-3 pb-2">
+        <div className="flex flex-col gap-1">
+          {PLAN_OPTIONS.map((option, idx) => {
+            const isFocused = focusedIdx === idx
+            const OptionIcon = option.icon
+            return (
+              <button
+                key={option.action}
+                type="button"
+                data-plan-decision={option.action}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left outline-none transition-colors',
+                  option.destructive
+                    ? 'text-foreground/80 hover:bg-destructive/10 hover:text-destructive'
+                    : 'text-foreground/85 hover:bg-muted/70',
+                  isFocused && (
+                    option.destructive
+                      ? 'bg-destructive/[0.07] text-destructive ring-1 ring-inset ring-destructive/20'
+                      : 'bg-muted/70 text-foreground ring-1 ring-inset ring-foreground/10'
+                  ),
+                )}
+                onClick={() => {
+                  if (option.action === 'feedback') {
+                    setShowFeedback(true)
+                  } else {
+                    void handleAction(option.action)
+                  }
+                }}
+                onMouseEnter={() => setFocusedIdx(idx)}
+                disabled={submitting}
+              >
+                <span className="w-4 shrink-0 text-center text-[11px] text-muted-foreground/55">
+                  {idx + 1}
+                </span>
+                <OptionIcon className="size-4 shrink-0 opacity-70" />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-sm font-medium">{option.label}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {option.action === 'approve'
+                      ? `批准后切换到“${PROMA_PERMISSION_MODE_CONFIG[approvalMode].label}”`
+                      : option.description}
+                  </span>
+                </span>
+                {isFocused && <Check className="size-4 shrink-0 opacity-70" />}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* 反馈输入框 */}
+      {showFeedback && (
+        <div className="px-3 pb-2">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              className="min-w-0 flex-1 rounded-xl bg-muted/45 px-3 py-2.5 text-xs outline-none transition-colors placeholder:text-muted-foreground/40 focus:bg-muted/70 focus:ring-1 focus:ring-inset focus:ring-foreground/10"
+              placeholder="输入修改意见..."
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  if (feedbackText.trim()) {
+                    void handleAction('feedback')
+                  }
+                }
+              }}
+              autoFocus
+              disabled={submitting}
+            />
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => void handleAction('feedback')}
+              disabled={submitting || !feedbackText.trim()}
+              className="h-8 px-3 text-xs shrink-0"
+            >
+              <Send className="size-3 mr-1" />
+              发送
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 底部提示 */}
+      <div className="px-4 pb-3 text-[10px] text-muted-foreground/45">
+        点击选择 · ↑↓ Enter 确认 · 1-3 快速选择
+      </div>
+    </div>
+  )
+}
+
+/** allowedPrompts 展示列表 */
+function AllowedPromptsList({ prompts }: { prompts: ExitPlanAllowedPrompt[] }): React.ReactElement {
+  return (
+    <div className="px-4 pb-3">
+      <p className="text-[11px] text-muted-foreground mb-1">计划需要的权限：</p>
+      <div className="flex flex-wrap gap-1">
+        {prompts.map((p, idx) => (
+          <span
+            key={idx}
+            className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] bg-primary/10 text-primary/80"
+          >
+            {p.prompt}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}

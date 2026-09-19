@@ -1,0 +1,22 @@
+{
+  "name": "@proma/local-service",
+  "version": "0.1.1",
+  "license": "AGPL-3.0-only",
+  "description": "Loopback desktop service that supervises one Claude CLI process per active session",
+  "type": "module",
+  "bin": {
+    "xcodes-local-service": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./test"
+  },
+  "dependencies": {
+    "@proma/desktop-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}

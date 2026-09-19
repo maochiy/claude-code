@@ -68,6 +68,16 @@ export {
 } from './shared/openaiConvertTools.js'
 export { adaptOpenAIStreamToAnthropic } from './shared/openaiStreamAdapter.js'
 export {
+  adaptResponsesStreamToAnthropic,
+  buildResponsesRequest,
+  extractUsage as extractResponsesUsage,
+  parseResponsesSSE,
+} from './providers/openai/responsesAdapter.js'
+export type {
+  ResponsesReasoningEffort,
+  ResponsesRequest,
+} from './providers/openai/responsesAdapter.js'
+export {
   normalizeOpenAIUsage,
   type AnthropicUsage,
 } from './shared/openaiUsage.js'

@@ -1185,6 +1185,9 @@ async function run(): Promise<CommanderCommand> {
     .addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp())
     .addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp())
     .addOption(
+      new Option('--catalog-only', 'Initialize the SDK command catalog without starting a conversation').hideHelp(),
+    )
+    .addOption(
       new Option(
         '--output-format <format>',
         'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)',
@@ -1437,7 +1440,7 @@ async function run(): Promise<CommanderCommand> {
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
       // dir-walk). Must be set before setup() / any of the gated work runs.
-      if ((options as { bare?: boolean }).bare) {
+      if ((options as { bare?: boolean; catalogOnly?: boolean }).bare || options.catalogOnly) {
         process.env.CLAUDE_CODE_SIMPLE = '1';
       }
 
@@ -2929,10 +2932,12 @@ async function run(): Promise<CommanderCommand> {
         `[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`,
       );
       // CLI flag (--mcp-config) should override file-based configs, matching settings precedence
-      const allMcpConfigs = {
-        ...existingMcpConfigs,
-        ...dynamicMcpConfig,
-      };
+      const allMcpConfigs = options.catalogOnly
+        ? {}
+        : {
+            ...existingMcpConfigs,
+            ...dynamicMcpConfig,
+          };
 
       // Separate SDK configs from regular MCP configs
       const sdkMcpConfigs: Record<string, McpSdkServerConfig> = {};
@@ -3152,7 +3157,7 @@ async function run(): Promise<CommanderCommand> {
         // set — those paths run setup hooks first (print.ts:544), and session
         // start hooks must wait until setup completes.
         const sessionStartHooksPromise =
-          options.continue || options.resume || teleport || setupTrigger
+          options.catalogOnly || options.continue || options.resume || teleport || setupTrigger
             ? undefined
             : processSessionStartHooks('startup');
         // Suppress transient unhandledRejection if this rejects before
@@ -3406,6 +3411,7 @@ async function run(): Promise<CommanderCommand> {
             workload: options.workload,
             setupTrigger: setupTrigger ?? undefined,
             sessionStartHooksPromise,
+            catalogOnly: options.catalogOnly === true,
           },
         );
         return;
