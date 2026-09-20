@@ -15,6 +15,19 @@ import { getPlatform } from '../utils/platform.js'
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
 
+export function shouldShowPasteFeedback(
+  input: string,
+  hasImageFilePath: boolean,
+  accumulatedLength = input.length,
+): boolean {
+  return (
+    accumulatedLength > PASTE_THRESHOLD ||
+    input.includes('\n') ||
+    input.includes('\r') ||
+    hasImageFilePath
+  )
+}
+
 type PasteHandlerProps = {
   onPaste?: (text: string) => void
   onInput: (input: string, key: Key) => void
@@ -38,12 +51,14 @@ export function usePasteHandler({
     timeoutId: ReturnType<typeof setTimeout> | null
   }
   isPasting: boolean
+  showPasteFeedback: boolean
 } {
   const [pasteState, setPasteState] = React.useState<{
     chunks: string[]
     timeoutId: ReturnType<typeof setTimeout> | null
   }>({ chunks: [], timeoutId: null })
   const [isPasting, setIsPasting] = React.useState(false)
+  const [showPasteFeedback, setShowPasteFeedback] = React.useState(false)
   const isMountedRef = React.useRef(true)
   // Mirrors pasteState.timeoutId but updated synchronously. When paste + a
   // keystroke arrive in the same stdin chunk, both wrappedOnInput calls run
@@ -51,6 +66,7 @@ export function usePasteHandler({
   // reads stale pasteState.timeoutId (null) and takes the onInput path. If
   // that key is Enter, it submits the old input and the paste is lost.
   const pastePendingRef = React.useRef(false)
+  const pasteLengthRef = React.useRef(0)
 
   const isMacOS = React.useMemo(() => getPlatform() === 'macos', [])
 
@@ -82,6 +98,7 @@ export function usePasteHandler({
       .finally(() => {
         if (isMountedRef.current) {
           setIsPasting(false)
+          setShowPasteFeedback(false)
         }
       })
   }, [onImagePaste])
@@ -102,11 +119,14 @@ export function usePasteHandler({
           onImagePaste,
           onPaste,
           setIsPasting,
+          setShowPasteFeedback,
           checkClipboardForImage,
           isMacOS,
           pastePendingRef,
+          pasteLengthRef,
         ) => {
           pastePendingRef.current = false
+          pasteLengthRef.current = 0
           setPasteState(({ chunks }) => {
             // Join chunks and filter out orphaned focus sequences
             // These can appear when focus events split during paste
@@ -163,6 +183,7 @@ export function usePasteHandler({
                     onPaste(nonImageLines.join('\n'))
                   }
                   setIsPasting(false)
+                  setShowPasteFeedback(false)
                 } else if (isTempScreenshot && isMacOS) {
                   // For temporary screenshot files that no longer exist, try clipboard
                   checkClipboardForImage()
@@ -171,6 +192,7 @@ export function usePasteHandler({
                     onPaste(pastedText)
                   }
                   setIsPasting(false)
+                  setShowPasteFeedback(false)
                 }
               })
               return { chunks: [], timeoutId: null }
@@ -187,8 +209,9 @@ export function usePasteHandler({
             if (onPaste) {
               onPaste(pastedText)
             }
-            // Reset isPasting state after paste is complete
+            // Reset paste state after paste is complete
             setIsPasting(false)
+            setShowPasteFeedback(false)
             return { chunks: [], timeoutId: null }
           })
         },
@@ -197,9 +220,11 @@ export function usePasteHandler({
         onImagePaste,
         onPaste,
         setIsPasting,
+        setShowPasteFeedback,
         checkClipboardForImage,
         isMacOS,
         pastePendingRef,
+        pasteLengthRef,
       )
     },
     [checkClipboardForImage, isMacOS, onImagePaste, onPaste],
@@ -215,11 +240,6 @@ export function usePasteHandler({
     // Detect paste from the parsed keypress event.
     // The keypress parser sets isPasted=true for content within bracketed paste.
     const isFromPaste = event.keypress.isPasted
-
-    // If this is pasted content, set isPasting state for UI feedback
-    if (isFromPaste) {
-      setIsPasting(true)
-    }
 
     // Handle large pastes (>PASTE_THRESHOLD chars)
     // Usually we get one or two input characters at a time. If we
@@ -246,6 +266,7 @@ export function usePasteHandler({
       checkClipboardForImage()
       // Reset isPasting since there's no text content to process
       setIsPasting(false)
+      setShowPasteFeedback(false)
       return
     }
 
@@ -267,6 +288,13 @@ export function usePasteHandler({
 
     if (shouldHandleAsPaste) {
       pastePendingRef.current = true
+      pasteLengthRef.current += input.length
+      setIsPasting(true)
+      if (
+        shouldShowPasteFeedback(input, hasImageFilePath, pasteLengthRef.current)
+      ) {
+        setShowPasteFeedback(true)
+      }
       setPasteState(({ chunks, timeoutId }) => {
         return {
           chunks: [...chunks, input],
@@ -282,6 +310,7 @@ export function usePasteHandler({
       // the closing escape sequence if the input length is too long for the
       // stdin buffer.
       setIsPasting(false)
+      setShowPasteFeedback(false)
     }
   }
 
@@ -289,5 +318,6 @@ export function usePasteHandler({
     wrappedOnInput,
     pasteState,
     isPasting,
+    showPasteFeedback,
   }
 }

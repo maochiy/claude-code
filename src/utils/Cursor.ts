@@ -1340,6 +1340,18 @@ export class MeasuredText {
       }
     }
 
+    while (wrappedLines.length > 1) {
+      const lastLine = wrappedLines[wrappedLines.length - 1]!
+      if (
+        lastLine.isPrecededByNewline ||
+        lastLine.endsWithNewline ||
+        /\S/u.test(lastLine.text)
+      ) {
+        break
+      }
+      wrappedLines.pop()
+    }
+
     return wrappedLines
   }
 
@@ -1360,6 +1372,20 @@ export class MeasuredText {
 
   public getOffsetFromPosition(position: Position): number {
     const wrappedLine = this.getLine(position.line)
+
+    // A trailing whitespace-only soft wrap is folded into the final visible
+    // position. Its terminal column is shared with the preceding line end, so
+    // map that endpoint to the preserved raw-text end rather than dropping the
+    // collapsed whitespace from cursor navigation.
+    const isFinalLine =
+      wrappedLine === this.wrappedLines[this.wrappedLines.length - 1]
+    if (
+      isFinalLine &&
+      !wrappedLine.endsWithNewline &&
+      position.column >= stringWidth(wrappedLine.text)
+    ) {
+      return this.text.length
+    }
 
     // Handle blank lines specially
     if (wrappedLine.text.length === 0 && wrappedLine.endsWithNewline) {

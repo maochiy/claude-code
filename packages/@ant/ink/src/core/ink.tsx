@@ -662,19 +662,29 @@ export default class Ink {
       };
     }
 
-    // Alt-screen: anchor the physical cursor to (0,0) before every diff.
-    // All cursor moves in log-update are RELATIVE to prev.cursor; if tmux
-    // (or any emulator) perturbs the physical cursor out-of-band (status
-    // bar refresh, pane redraw, Cmd+K wipe), the relative moves drift and
-    // content creeps up 1 row/frame. CSI H resets the physical cursor;
-    // passing prev.cursor=(0,0) makes the diff compute from the same spot.
-    // Self-healing against any external cursor manipulation. Main-screen
-    // can't do this — cursor.y tracks scrollback rows CSI H can't reach.
-    // The CSI H write is deferred until after the diff is computed so we
-    // can skip it for empty diffs (no writes → physical cursor unused).
+    const decl = this.cursorDeclaration;
+    const rect = decl !== null ? nodeCache.get(decl.node) : undefined;
+    const target =
+      decl !== null && rect !== undefined ? { x: rect.x + decl.relativeX, y: rect.y + decl.relativeY } : null;
+
+    // Alt-screen diffs normally anchor at (0,0) so relative cursor moves can
+    // recover from out-of-band terminal cursor changes. Once a declared cursor
+    // has been parked, however, its physical position is already known. Use it
+    // as the diff origin so ordinary input frames don't visibly move HOME and
+    // back on terminals that cannot make the update atomic.
     let prevFrame = this.frontFrame;
+    const parked = this.displayCursor;
+    const canReuseDeclaredCursor =
+      this.altScreenActive &&
+      !SYNC_OUTPUT_SUPPORTED &&
+      target !== null &&
+      parked !== null &&
+      !this.needsEraseBeforePaint;
     if (this.altScreenActive) {
-      prevFrame = { ...this.frontFrame, cursor: ALT_SCREEN_ANCHOR_CURSOR };
+      prevFrame = {
+        ...this.frontFrame,
+        cursor: canReuseDeclaredCursor ? { ...parked, visible: false } : ALT_SCREEN_ANCHOR_CURSOR,
+      };
     }
 
     const tDiff = performance.now();
@@ -726,51 +736,30 @@ export default class Ink {
     const optimized = optimize(diff);
     const optimizeMs = performance.now() - tOptimize;
     const hasDiff = optimized.length > 0;
+
     // Periodic self-healing: for main-screen mode, emit ERASE_SCREEN + HOME
     // to clear the terminal before the diff. Alt-screen has its own CSI H
     // anchor + cursor park below. BSU/ESU wraps erase+paint atomically on
     // supported terminals (main-screen always uses sync markers).
     if (this.altScreenActive && hasDiff) {
-      // Prepend CSI H to anchor the physical cursor to (0,0) so
-      // log-update's relative moves compute from a known spot (self-healing
-      // against out-of-band cursor drift, see the ALT_SCREEN_ANCHOR_CURSOR
-      // comment above). Append CSI row;1 H to park the cursor at the bottom
-      // row (where the prompt input is) — without this, the cursor ends
-      // wherever the last diff write landed (a different row every frame),
-      // making iTerm2's cursor guide flicker as it chases the cursor.
-      // BSU/ESU protects content atomicity but iTerm2's guide tracks cursor
-      // position independently. Parking at bottom (not 0,0) keeps the guide
-      // where the user's attention is.
+      // When no declared cursor has been parked yet, HOME establishes the
+      // origin used above. Once the physical cursor is known to be at the
+      // declared caret, log-update computes directly from that position.
+      // Avoiding the redundant HOME→caret round trip keeps unsynchronized
+      // terminals from visibly refreshing the input region on every frame.
       //
-      // After resize, prepend ERASE_SCREEN too. The diff only writes cells
-      // that changed; cells where new=blank and prev-buffer=blank get skipped
-      // — but the physical terminal still has stale content there (shorter
-      // lines at new width leave old-width text tails visible). ERASE inside
-      // BSU/ESU is atomic: old content stays visible until the whole
-      // erase+paint lands, then swaps in one go. Writing ERASE_SCREEN
-      // synchronously in handleResize would blank the screen for the ~80ms
-      // render() takes.
+      // After resize, prepend ERASE_SCREEN + HOME. The physical cursor can no
+      // longer be trusted because the terminal dimensions changed.
       if (this.needsEraseBeforePaint) {
         this.needsEraseBeforePaint = false;
         optimized.unshift(ERASE_THEN_HOME_PATCH);
-      } else {
+      } else if (!canReuseDeclaredCursor) {
         optimized.unshift(CURSOR_HOME_PATCH);
       }
-      optimized.push(this.altScreenParkPatch);
+      if (target === null) {
+        optimized.push(this.altScreenParkPatch);
+      }
     }
-
-    // Native cursor positioning: park the terminal cursor at the declared
-    // position so IME preedit text renders inline and screen readers /
-    // magnifiers can follow the input. nodeCache holds the absolute screen
-    // rect populated by renderNodeToOutput this frame (including scrollTop
-    // translation) — if the declared node didn't render (stale declaration
-    // after remount, or scrolled out of view), it won't be in the cache
-    // and no move is emitted.
-    const decl = this.cursorDeclaration;
-    const rect = decl !== null ? nodeCache.get(decl.node) : undefined;
-    const target =
-      decl !== null && rect !== undefined ? { x: rect.x + decl.relativeX, y: rect.y + decl.relativeY } : null;
-    const parked = this.displayCursor;
 
     // Preserve the empty-diff zero-write fast path: skip all cursor writes
     // when nothing rendered AND the park target is unchanged.
@@ -790,8 +779,8 @@ export default class Ink {
 
       if (target !== null) {
         if (this.altScreenActive) {
-          // Absolute CUP (1-indexed); next frame's CSI H resets regardless.
-          // Emitted after altScreenParkPatch so the declared position wins.
+          // Absolute CUP (1-indexed) establishes the declared caret as the
+          // known physical origin for the next unsynchronized frame.
           const row = Math.min(Math.max(target.y + 1, 1), terminalRows);
           const col = Math.min(Math.max(target.x + 1, 1), terminalWidth);
           optimized.push({ type: 'stdout', content: cursorPosition(row, col) });

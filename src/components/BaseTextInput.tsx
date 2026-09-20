@@ -42,7 +42,7 @@ export function BaseTextInput({
     active: Boolean(props.focus && props.showCursor && terminalFocus),
   });
 
-  const { wrappedOnInput, isPasting } = usePasteHandler({
+  const { wrappedOnInput, isPasting, showPasteFeedback } = usePasteHandler({
     onPaste: props.onPaste,
     onInput: (input, key) => {
       // Prevent Enter key from triggering submission during paste
@@ -58,9 +58,9 @@ export function BaseTextInput({
   const { onIsPastingChange } = props;
   React.useEffect(() => {
     if (onIsPastingChange) {
-      onIsPastingChange(isPasting);
+      onIsPastingChange(showPasteFeedback);
     }
-  }, [isPasting, onIsPastingChange]);
+  }, [showPasteFeedback, onIsPastingChange]);
 
   const { showPlaceholder, renderedPlaceholder } = renderPlaceholder({
     placeholder: props.placeholder,
