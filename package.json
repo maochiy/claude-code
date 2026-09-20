@@ -1,6 +1,6 @@
 {
   "name": "claude-code-best",
-  "version": "2.8.21",
+  "version": "2.8.22",
   "description": "Reverse-engineered Anthropic Claude Code CLI — interactive AI coding assistant in the terminal",
   "type": "module",
   "author": "claude-code-best <claude-code-best@proton.me>",
@@ -212,6 +212,7 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
+    "@napi-rs/keyring": "2.1.0",
     "doubaoime-asr": "^0.1.0"
   },
   "overrides": {
