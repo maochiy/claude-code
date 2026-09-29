@@ -490,21 +490,60 @@ export async function createChatGPTResponsesStream(params: {
     headers['ChatGPT-Account-Id'] = auth.accountId
   }
   // Honor the provider profile's proxy (or HTTPS_PROXY/system fallback).
-  const response = await fetchFn(
-    'https://chatgpt.com/backend-api/codex/responses',
-    {
-      ...getProxyFetchOptions({ proxyOverride: getActiveProviderProxyUrl() }),
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params.request),
-      signal: params.signal,
-    },
-  )
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
+  // Connections are reused normally (keep-alive); the retry loop below
+  // handles the rare case where a pooled socket was closed behind our back.
+  const requestInit: RequestInit = {
+    ...getProxyFetchOptions({ proxyOverride: getActiveProviderProxyUrl() }),
+    method: 'POST',
+    headers,
+    body: JSON.stringify(params.request),
+    signal: params.signal,
+  }
+  // Retry the connection phase on transient network failures (proxy blips,
+  // stale pooled sockets). Only failures BEFORE a response arrives are
+  // retried — a mid-stream disconnect is not (it would replay the turn).
+  const maxAttempts = 3
+  let lastFetchError: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (params.signal?.aborted) break
+    try {
+      const response = await fetchFn(
+        'https://chatgpt.com/backend-api/codex/responses',
+        requestInit,
+      )
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(
+          `ChatGPT Responses API request failed (${response.status})${text ? `: ${text.slice(0, 500)}` : ''}`,
+        )
+      }
+      return parseSSE(response)
+    } catch (error) {
+      if (params.signal?.aborted) throw error
+      lastFetchError = error
+      // HTTP-level errors (4xx/5xx from the API) are deterministic — don't
+      // retry those, only network-level failures (fetch failed / timeouts).
+      if (
+        error instanceof Error &&
+        /request failed \(\d{3}\)/.test(error.message)
+      ) {
+        throw error
+      }
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 750 * attempt))
+      }
+    }
+  }
+  // Surface the underlying cause (ETIMEDOUT / ECONNRESET / socket closed …)
+  // so "fetch failed" isn't a dead end when diagnosing proxy/network issues.
+  if (lastFetchError instanceof Error) {
+    const cause = (lastFetchError as { cause?: unknown }).cause
+    const causeDetail =
+      cause instanceof Error ? cause.message : cause ? String(cause) : undefined
     throw new Error(
-      `ChatGPT Responses API request failed (${response.status})${text ? `: ${text.slice(0, 500)}` : ''}`,
+      `ChatGPT request failed: ${lastFetchError.message}${causeDetail ? ` (${causeDetail})` : ''}`,
+      { cause: lastFetchError },
     )
   }
-  return parseSSE(response)
+  throw new Error('ChatGPT Responses API request failed')
 }
