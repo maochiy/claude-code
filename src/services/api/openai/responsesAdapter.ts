@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { normalizeOpenAIUsage, type AnthropicUsage } from '@ant/model-provider'
-import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import { getActiveProviderProxyUrl } from 'src/utils/model/providerProfiles.js'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
+import { proxiedFetch } from './proxiedFetch.js'
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = Record<string, unknown>
@@ -476,7 +476,6 @@ export async function createChatGPTResponsesStream(params: {
   fetchOverride?: typeof fetch
 }): Promise<AsyncIterable<Record<string, unknown>>> {
   const auth = await getValidChatGPTAuth()
-  const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.accessToken}`,
     'Content-Type': 'application/json',
@@ -490,24 +489,29 @@ export async function createChatGPTResponsesStream(params: {
     headers['ChatGPT-Account-Id'] = auth.accountId
   }
   // Honor the provider profile's proxy (or HTTPS_PROXY/system fallback).
-  // Connections are reused normally (keep-alive); the retry loop below
-  // handles the rare case where a pooled socket was closed behind our back.
-  const requestInit: RequestInit = {
-    ...getProxyFetchOptions({ proxyOverride: getActiveProviderProxyUrl() }),
-    method: 'POST',
-    headers,
+  // Transport: node-http-layer request with a dedicated agent per attempt
+  // (ZCode-style) — no connection pooling, so stale pooled sockets can't
+  // cause intermittent "fetch failed".
+  const proxyUrl = getActiveProviderProxyUrl()
+  const requestInit = {
     body: JSON.stringify(params.request),
+    headers,
+    method: 'POST',
+    proxyUrl,
     signal: params.signal,
   }
   // Retry the connection phase on transient network failures (proxy blips,
-  // stale pooled sockets). Only failures BEFORE a response arrives are
-  // retried — a mid-stream disconnect is not (it would replay the turn).
-  const maxAttempts = 3
+  // node switches, large-body upload stalls). Only failures BEFORE a
+  // response arrives are retried — a mid-stream disconnect is not (it would
+  // replay the turn). Backoff covers ~30s so short proxy/node outages heal
+  // without surfacing an error mid-conversation.
+  const maxAttempts = 5
+  const retryDelaysMs = [1000, 2000, 4000, 8000]
   let lastFetchError: unknown
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (params.signal?.aborted) break
     try {
-      const response = await fetchFn(
+      const response = await proxiedFetch(
         'https://chatgpt.com/backend-api/codex/responses',
         requestInit,
       )
@@ -530,7 +534,9 @@ export async function createChatGPTResponsesStream(params: {
         throw error
       }
       if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 750 * attempt))
+        await new Promise(resolve =>
+          setTimeout(resolve, retryDelaysMs[attempt - 1] ?? 8000),
+        )
       }
     }
   }
