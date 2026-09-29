@@ -39,6 +39,12 @@ import {
   isChatGPTAuthMode,
 } from './chatgptModels.js'
 import { getConfiguredModels } from './configuredModels.js'
+import {
+  getActiveProviderProfileName,
+  getConfiguredProviderProfiles,
+  type ProviderProfile,
+  type ProviderProfileType,
+} from './providerProfiles.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -47,6 +53,155 @@ export type ModelOption = {
   label: string
   description: string
   descriptionForModel?: string
+  /** Group title shown as a section header in the model picker. */
+  group?: string
+  /** Provider profile NAME this option belongs to (for cross-provider switching). */
+  provider?: string
+  /** True for the namespaced "provider default" pseudo-option. */
+  providerDefault?: boolean
+  /** Non-selectable rows (group headers). */
+  disabled?: boolean
+}
+
+/** Separator used to namespace options of non-active providers. */
+export const PROVIDER_OPTION_SEPARATOR = '::'
+const GROUP_HEADER_PREFIX = '__group_header__'
+/** Reserved namespace key for the first-party Anthropic escape hatch. */
+export const FIRSTPARTY_PROVIDER_KEY = 'firstparty'
+
+export function parseProviderOptionValue(
+  value: string,
+): { provider: string; modelId: string; isDefault: boolean } | undefined {
+  const idx = value.indexOf(PROVIDER_OPTION_SEPARATOR)
+  if (idx === -1) return undefined
+  const provider = value.slice(0, idx)
+  const modelId = value.slice(idx + PROVIDER_OPTION_SEPARATOR.length)
+  if (!provider) return undefined
+  return {
+    provider,
+    modelId: modelId === 'default' ? '' : modelId,
+    isDefault: modelId === 'default',
+  }
+}
+
+export function isGroupHeaderValue(value: string): boolean {
+  return value.startsWith(GROUP_HEADER_PREFIX)
+}
+
+/**
+ * Build a non-selectable group header row for the model picker. Headers are
+ * disabled options; focus navigation skips them (see use-select-navigation).
+ */
+export function makeGroupHeaderOption(title: string): ModelOption {
+  return {
+    value: `${GROUP_HEADER_PREFIX}${title}`,
+    label: `── ${title} ──`,
+    description: '',
+    disabled: true,
+  }
+}
+
+/** Human-readable display name for each provider protocol. */
+export function getProviderProfileLabel(type: ProviderProfileType): string {
+  switch (type) {
+    case 'anthropic':
+      return 'Anthropic Compatible'
+    case 'openai':
+      return isChatGPTAuthMode() ? 'ChatGPT (Codex)' : 'OpenAI Compatible'
+    case 'gemini':
+      return 'Gemini'
+    case 'grok':
+      return 'Grok (xAI)'
+  }
+}
+
+/** Group label for a named profile: just its name, with the protocol as a hint. */
+function getNamedProviderGroupLabel(
+  name: string,
+  type: ProviderProfileType,
+  profile: ProviderProfile,
+): string {
+  // ChatGPT-auth profiles read as "Codex" accounts; everything else is the
+  // user-chosen name (protocol shown in the default-model description).
+  if (type === 'openai' && profile.authMode === 'chatgpt') {
+    return `${name} · ChatGPT (Codex)`
+  }
+  return name
+}
+
+/**
+ * Options for configured providers other than the active one, shown in
+ * the /model picker as separate groups (titled by the provider NAME).
+ * Values are namespaced with the provider name (`xiuda::glm-5.3`) to avoid
+ * colliding with the active provider's options; select handlers parse the
+ * namespace and activate the provider before applying the model.
+ */
+export function getInactiveProviderOptions(fastMode = false): ModelOption[] {
+  const activeName = getActiveProviderProfileName()
+  const options: ModelOption[] = []
+  for (const { name, type, profile } of getConfiguredProviderProfiles()) {
+    if (name === activeName) continue
+    const groupLabel = getNamedProviderGroupLabel(name, type, profile)
+    const namespaced = (id: string): string =>
+      `${name}${PROVIDER_OPTION_SEPARATOR}${id}`
+
+    // Catalog: ChatGPT-auth profiles use the built-in codex model list,
+    // everything else uses the profile's saved catalog.
+    const catalog: Array<{
+      value: string
+      label: string
+      description: string
+    }> =
+      type === 'openai' && profile.authMode === 'chatgpt'
+        ? CHATGPT_CODEX_MODEL_OPTIONS.map(m => ({
+            value: m.value,
+            label: m.label,
+            description: m.description,
+          }))
+        : (profile.models ?? []).map(m => ({
+            value: m.id,
+            label: m.name ?? m.id,
+            description:
+              m.description ??
+              (m.contextWindow
+                ? `${m.contextWindow.toLocaleString()} context`
+                : m.id),
+          }))
+
+    const typeHint = getProviderProfileLabel(type)
+    options.push({
+      value: namespaced('default'),
+      label: 'Default (recommended)',
+      description: `${typeHint} · default model`,
+      group: groupLabel,
+      provider: name,
+      providerDefault: true,
+    })
+    for (const m of catalog) {
+      options.push({
+        value: namespaced(m.value),
+        label: m.label,
+        description: m.description,
+        group: groupLabel,
+        provider: name,
+      })
+    }
+    void fastMode
+  }
+
+  // When a third-party provider is active, offer a way back to the
+  // first-party Anthropic default (Claude OAuth).
+  if (activeName !== undefined) {
+    options.push({
+      value: `${FIRSTPARTY_PROVIDER_KEY}${PROVIDER_OPTION_SEPARATOR}firstparty`,
+      label: 'Default (recommended)',
+      description: 'Anthropic first-party API (Claude OAuth)',
+      group: 'Anthropic (first-party)',
+      provider: FIRSTPARTY_PROVIDER_KEY,
+      providerDefault: true,
+    })
+  }
+  return options
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {

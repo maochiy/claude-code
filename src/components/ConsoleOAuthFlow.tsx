@@ -20,7 +20,16 @@ import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { openBrowser } from '../utils/browser.js';
 import { logError } from '../utils/log.js';
-import { getSettings_DEPRECATED, updateSettingsForSource } from '../utils/settings/settings.js';
+import { getSettings_DEPRECATED } from '../utils/settings/settings.js';
+import {
+  activateProviderProfile,
+  getActiveProviderProfileName,
+  getConfiguredProviderProfiles,
+  getProviderProfile,
+  resolveProfileType,
+  type ProviderProfileType,
+} from '../utils/model/providerProfiles.js';
+import { getProviderProfileLabel } from '../utils/model/modelOptions.js';
 import { CHINA_LLM_PROVIDERS, type ProviderPreset, resolveChinaProviderBaseURL } from 'src/utils/chinaLlmProviders.js';
 import {
   getInitialConfiguredModels,
@@ -40,7 +49,9 @@ type Props = {
 };
 
 type OAuthStatus =
-  | { state: 'idle' } // Initial state, waiting to select login method
+  | { state: 'provider_name' } // Step 1: name the provider before choosing a protocol
+  | { state: 'provider_list' } // Entry: saved providers + add-new + first-party logins
+  | { state: 'idle' } // Login method menu
   | { state: 'platform_setup' } // Show platform setup info (Bedrock/Vertex/Foundry)
   | { state: 'custom_platform_models' }
   | { state: 'openai_chat_api_models' }
@@ -104,6 +115,43 @@ function applyEnvironmentPatch(env: Record<string, string | undefined>): void {
   }
 }
 
+/**
+ * Step 1 of the /login flow: ask for a provider name. The name becomes the
+ * profile key shown in /model group headers. Empty input skips naming
+ * (profile falls back to the protocol type name).
+ */
+function ProviderNameScreen({ onDone }: { onDone(name: string): void }): React.ReactNode {
+  const [value, setValue] = useState('');
+  const [cursorOffset, setCursorOffset] = useState(0);
+  const columns = useTerminalSize().columns - 20;
+
+  const submit = useCallback(() => {
+    onDone(value.trim());
+  }, [value, onDone]);
+
+  useKeybinding('confirm:no', () => onDone(''), { context: 'Confirmation' });
+
+  return (
+    <Box flexDirection="column" gap={1} marginTop={1}>
+      <Text bold>Name this provider</Text>
+      <Text dimColor>Used to group its models in /model (e.g. xiuda, codex, glm). Leave empty to skip.</Text>
+      <Box>
+        <Text>{'> '}</Text>
+        <TextInput
+          value={value}
+          onChange={setValue}
+          onSubmit={submit}
+          cursorOffset={cursorOffset}
+          onChangeCursorOffset={setCursorOffset}
+          columns={columns}
+          focus={true}
+        />
+      </Box>
+      <Text dimColor>Enter to continue · Esc to skip</Text>
+    </Box>
+  );
+}
+
 export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
@@ -129,8 +177,13 @@ export function ConsoleOAuthFlow({
     if (forceLoginMethod === 'claudeai' || forceLoginMethod === 'console') {
       return { state: 'ready_to_start' };
     }
-    return { state: 'idle' };
+    // Entry screen: previously configured providers + add-new + first-party.
+    return { state: 'provider_list' };
   });
+
+  // Provider name entered on the first screen. Carried through the
+  // protocol-specific flows and used as the profile key on save.
+  const [providerName, setProviderName] = useState('');
 
   const [pastedCode, setPastedCode] = useState('');
   const [cursorOffset, setCursorOffset] = useState(0);
@@ -299,11 +352,10 @@ export function ConsoleOAuthFlow({
           throw new Error((orgResult as { valid: false; message: string }).message);
         }
         // OAuth uses the official catalog, so remove any custom provider model catalog.
-        updateSettingsForSource('userSettings', {
-          modelType: 'anthropic',
-          model: undefined,
-          models: undefined,
-        });
+        // activateProviderProfile snapshots the previously-active third-party
+        // provider into its own profile, so it can be re-activated later
+        // without re-entering credentials.
+        activateProviderProfile('anthropic', { clearModelCatalog: true });
 
         setOAuthStatus({ state: 'success' });
         void sendNotification(
@@ -413,6 +465,8 @@ export function ConsoleOAuthFlow({
           handleSubmitCode={handleSubmitCode}
           setOAuthStatus={setOAuthStatus}
           setLoginWithClaudeAi={setLoginWithClaudeAi}
+          providerName={providerName}
+          setProviderName={setProviderName}
           onDone={onDone}
         />
       </Box>
@@ -435,6 +489,8 @@ type OAuthStatusMessageProps = {
   handleSubmitCode: (value: string, url: string) => void;
   setOAuthStatus: (status: OAuthStatus) => void;
   setLoginWithClaudeAi: (value: boolean) => void;
+  providerName: string;
+  setProviderName: (value: string) => void;
 };
 
 function OAuthStatusMessage({
@@ -451,17 +507,144 @@ function OAuthStatusMessage({
   handleSubmitCode,
   setOAuthStatus,
   setLoginWithClaudeAi,
+  providerName,
+  setProviderName,
   onDone,
 }: OAuthStatusMessageProps): React.ReactNode {
   switch (oauthStatus.state) {
-    case 'idle':
+    case 'provider_list': {
+      const profiles = getConfiguredProviderProfiles();
+      const activeName = getActiveProviderProfileName();
+      const options = profiles.map(p => {
+        const typeLabel =
+          p.type === 'openai' && p.profile.authMode === 'chatgpt' ? 'ChatGPT (Codex)' : getProviderProfileLabel(p.type);
+        const isCurrent = p.name === activeName;
+        return {
+          p,
+          label: (
+            <Text>
+              {p.name}
+              {isCurrent ? <Text color="success"> · current</Text> : null} · <Text dimColor>{typeLabel}</Text>
+              {'\n'}
+            </Text>
+          ),
+          value: p.name,
+        };
+      });
       return (
         <Box flexDirection="column" gap={1} marginTop={1}>
-          <Text bold>
-            {startingMessage
-              ? startingMessage
-              : `Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.`}
-          </Text>
+          <Text bold>Providers</Text>
+          <Text dimColor>Select a provider to reconfigure it, or add a new one.</Text>
+          <Box>
+            <Select
+              options={[
+                ...options.map(o => ({
+                  label: o.label,
+                  value: o.value,
+                })),
+                {
+                  label: (
+                    <Text>
+                      + Add new provider · <Text dimColor>Name it, pick a protocol, add models</Text>
+                      {'\n'}
+                    </Text>
+                  ),
+                  value: '__add_new__',
+                },
+                {
+                  label: (
+                    <Text>
+                      Claude account with subscription ·{' '}
+                      <Text dimColor>Pro, Max, Team, or Enterprise (no profile)</Text>
+                      {'\n'}
+                    </Text>
+                  ),
+                  value: 'claudeai',
+                },
+                {
+                  label: (
+                    <Text>
+                      Anthropic Console account · <Text dimColor>API usage billing (no profile)</Text>
+                      {'\n'}
+                    </Text>
+                  ),
+                  value: 'console',
+                },
+                {
+                  label: (
+                    <Text>
+                      3rd-party platform · <Text dimColor>Amazon Bedrock, Microsoft Foundry, or Vertex AI</Text>
+                      {'\n'}
+                    </Text>
+                  ),
+                  value: 'platform',
+                },
+              ]}
+              onChange={value => {
+                if (value === '__add_new__') {
+                  setProviderName('');
+                  setOAuthStatus({ state: 'provider_name' });
+                  return;
+                }
+                if (value === 'claudeai' || value === 'console') {
+                  setOAuthStatus({ state: 'ready_to_start' });
+                  setLoginWithClaudeAi(value === 'claudeai');
+                  return;
+                }
+                if (value === 'platform') {
+                  setOAuthStatus({ state: 'platform_setup' });
+                  return;
+                }
+                // Existing profile: reconfigure it under the same name.
+                const entry = profiles.find(p => p.name === value);
+                if (!entry) return;
+                setProviderName(entry.name);
+                if (entry.type === 'openai' && entry.profile.authMode === 'chatgpt') {
+                  setOAuthStatus({ state: 'chatgpt_subscription', phase: 'requesting' });
+                } else if (entry.type === 'anthropic') {
+                  setOAuthStatus({ state: 'custom_platform_models' });
+                } else if (entry.type === 'openai') {
+                  setOAuthStatus({ state: 'openai_chat_api_models' });
+                } else if (entry.type === 'gemini') {
+                  setOAuthStatus({ state: 'gemini_api_models' });
+                } else {
+                  // grok has no setup form — activate directly.
+                  const { error } = activateProviderProfile(entry.name);
+                  setOAuthStatus({ state: error ? 'idle' : 'success' });
+                }
+              }}
+            />
+          </Box>
+        </Box>
+      );
+    }
+
+    case 'provider_name': {
+      return (
+        <ProviderNameScreen
+          onDone={name => {
+            setProviderName(name);
+            setOAuthStatus({ state: 'idle' });
+          }}
+        />
+      );
+    }
+
+    case 'idle': {
+      const currentProviderName = providerName;
+      return (
+        <Box flexDirection="column" gap={1} marginTop={1}>
+          {providerName ? (
+            <Text bold>
+              Configure provider: <Text color="suggestion">{providerName}</Text>
+            </Text>
+          ) : (
+            <Text bold>
+              {startingMessage
+                ? startingMessage
+                : `Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.`}
+            </Text>
+          )}
 
           <Text>Select login method:</Text>
 
@@ -588,6 +771,7 @@ function OAuthStatusMessage({
           </Box>
         </Box>
       );
+    }
 
     case 'custom_platform_models':
     case 'openai_chat_api_models':
@@ -599,8 +783,17 @@ function OAuthStatusMessage({
             ? 'gemini'
             : 'anthropic';
       const currentSettings = getSettings_DEPRECATED() || {};
-      const initialModels = getInitialConfiguredModels(provider, currentSettings);
-      const initialDefaultModelId = resolveConfiguredDefaultModelId(provider, initialModels, currentSettings);
+      // Editing a named profile: prefill from the profile's own values, not
+      // from process.env (which holds the ACTIVE provider's credentials).
+      const editingProfile = providerName ? getProviderProfile(providerName) : undefined;
+      const editingThisProvider = !!editingProfile && resolveProfileType(providerName, editingProfile) === provider;
+      const initialModels =
+        editingThisProvider && editingProfile?.models?.length
+          ? editingProfile.models
+          : getInitialConfiguredModels(provider, currentSettings);
+      const initialDefaultModelId = editingThisProvider
+        ? editingProfile?.defaultModel
+        : resolveConfiguredDefaultModelId(provider, initialModels, currentSettings);
       const isOpenAI = provider === 'openai';
       const isGemini = provider === 'gemini';
       const title = isOpenAI
@@ -613,16 +806,20 @@ function OAuthStatusMessage({
         : isGemini
           ? "Configure a Gemini Generate Content compatible endpoint. Base URL is optional and defaults to Google's v1beta API."
           : 'Configure your own Anthropic-compatible API endpoint.';
-      const initialBaseUrl = isOpenAI
-        ? (process.env.OPENAI_BASE_URL ?? '')
-        : isGemini
-          ? (process.env.GEMINI_BASE_URL ?? '')
-          : (process.env.ANTHROPIC_BASE_URL ?? '');
-      const initialApiKey = isOpenAI
-        ? (process.env.OPENAI_API_KEY ?? '')
-        : isGemini
-          ? (process.env.GEMINI_API_KEY ?? '')
-          : (process.env.ANTHROPIC_AUTH_TOKEN ?? '');
+      const initialBaseUrl = editingThisProvider
+        ? (editingProfile?.baseUrl ?? '')
+        : isOpenAI
+          ? (process.env.OPENAI_BASE_URL ?? '')
+          : isGemini
+            ? (process.env.GEMINI_BASE_URL ?? '')
+            : (process.env.ANTHROPIC_BASE_URL ?? '');
+      const initialApiKey = editingThisProvider
+        ? (editingProfile?.apiKey ?? '')
+        : isOpenAI
+          ? (process.env.OPENAI_API_KEY ?? '')
+          : isGemini
+            ? (process.env.GEMINI_API_KEY ?? '')
+            : (process.env.ANTHROPIC_AUTH_TOKEN ?? '');
 
       return (
         <ConfiguredProviderSetup
@@ -634,37 +831,18 @@ function OAuthStatusMessage({
           initialDefaultModelId={initialDefaultModelId}
           onCancel={() => setOAuthStatus({ state: 'idle' })}
           onSave={({ baseUrl, apiKey, models, defaultModelId }) => {
-            const env: Record<string, string | undefined> = isOpenAI
-              ? {
-                  OPENAI_AUTH_MODE: undefined,
-                  OPENAI_BASE_URL: baseUrl || undefined,
-                  OPENAI_API_KEY: apiKey || undefined,
-                  OPENAI_MODEL: undefined,
-                  OPENAI_DEFAULT_HAIKU_MODEL: undefined,
-                  OPENAI_DEFAULT_SONNET_MODEL: undefined,
-                  OPENAI_DEFAULT_OPUS_MODEL: undefined,
-                }
-              : isGemini
-                ? {
-                    GEMINI_BASE_URL: baseUrl || undefined,
-                    GEMINI_API_KEY: apiKey || undefined,
-                    GEMINI_MODEL: undefined,
-                    GEMINI_DEFAULT_HAIKU_MODEL: undefined,
-                    GEMINI_DEFAULT_SONNET_MODEL: undefined,
-                    GEMINI_DEFAULT_OPUS_MODEL: undefined,
-                  }
-                : {
-                    ANTHROPIC_BASE_URL: baseUrl || undefined,
-                    ANTHROPIC_AUTH_TOKEN: apiKey || undefined,
-                    ANTHROPIC_DEFAULT_HAIKU_MODEL: undefined,
-                    ANTHROPIC_DEFAULT_SONNET_MODEL: undefined,
-                    ANTHROPIC_DEFAULT_OPUS_MODEL: undefined,
-                  };
-            const { error } = updateSettingsForSource('userSettings', {
-              modelType: provider,
+            // Save into the named provider profile and activate it. Other
+            // providers' profiles (e.g. a previously configured endpoint)
+            // are snapshotted and left intact — no more cross-provider clobbering.
+            const profileName = providerName || provider;
+            const hasCatalog = models.length > 0;
+            const { error } = activateProviderProfile(profileName, {
+              type: provider as ProviderProfileType,
+              baseUrl: baseUrl || '',
+              apiKey: apiKey || '',
+              models: hasCatalog ? models : undefined,
               model: defaultModelId,
-              models,
-              env: env as unknown as Record<string, string>,
+              clearModelCatalog: !hasCatalog,
             });
             if (error) {
               setOAuthStatus({
@@ -674,7 +852,6 @@ function OAuthStatusMessage({
               });
               return;
             }
-            applyEnvironmentPatch(env);
             if (isOpenAI) {
               clearOpenAIClientCache();
               void removeChatGPTAuth().catch(() => {});
@@ -748,7 +925,6 @@ function OAuthStatusMessage({
 
       const doSave = useCallback(() => {
         const finalVals = { ...displayValues, [activeField]: inputValue };
-        const env: Record<string, string> = {};
 
         // Validate base_url if provided
         if (finalVals.base_url) {
@@ -770,17 +946,26 @@ function OAuthStatusMessage({
             });
             return;
           }
-          env.ANTHROPIC_BASE_URL = finalVals.base_url;
         }
 
-        if (finalVals.api_key) env.ANTHROPIC_AUTH_TOKEN = finalVals.api_key;
-        if (finalVals.haiku_model) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = finalVals.haiku_model;
-        if (finalVals.sonnet_model) env.ANTHROPIC_DEFAULT_SONNET_MODEL = finalVals.sonnet_model;
-        if (finalVals.opus_model) env.ANTHROPIC_DEFAULT_OPUS_MODEL = finalVals.opus_model;
-        const { error } = updateSettingsForSource('userSettings', {
-          modelType: 'anthropic',
-          env,
-        } as unknown as Parameters<typeof updateSettingsForSource>[1]);
+        // Build the model catalog from the family fields (replaces the
+        // legacy ANTHROPIC_DEFAULT_*_MODEL env vars).
+        const models = (
+          [
+            ['haiku', finalVals.haiku_model],
+            ['sonnet', finalVals.sonnet_model],
+            ['opus', finalVals.opus_model],
+          ] as const
+        )
+          .filter(([, id]) => !!id)
+          .map(([family, id]) => ({ id, name: `${family} (custom)` }));
+        const { error } = activateProviderProfile(providerName || 'anthropic', {
+          type: 'anthropic',
+          baseUrl: finalVals.base_url ?? '',
+          apiKey: finalVals.api_key ?? '',
+          models: models.length > 0 ? models : undefined,
+          clearModelCatalog: models.length === 0,
+        });
         if (error) {
           setOAuthStatus({
             state: 'error',
@@ -796,7 +981,6 @@ function OAuthStatusMessage({
             },
           });
         } else {
-          for (const [k, v] of Object.entries(env)) process.env[k] = v;
           setOAuthStatus({ state: 'success' });
           void onDone();
         }
@@ -948,9 +1132,6 @@ function OAuthStatusMessage({
 
       const doOpenAISave = useCallback(() => {
         const finalVals = { ...openaiDisplayValues, [activeField]: openaiInputValue };
-        const env: Record<string, string | undefined> = {
-          OPENAI_AUTH_MODE: undefined,
-        };
 
         // Validate base_url if provided
         if (finalVals.base_url) {
@@ -972,18 +1153,27 @@ function OAuthStatusMessage({
             });
             return;
           }
-          env.OPENAI_BASE_URL = finalVals.base_url;
         }
 
-        if (finalVals.api_key) env.OPENAI_API_KEY = finalVals.api_key;
-        if (finalVals.haiku_model) env.OPENAI_DEFAULT_HAIKU_MODEL = finalVals.haiku_model;
-        if (finalVals.sonnet_model) env.OPENAI_DEFAULT_SONNET_MODEL = finalVals.sonnet_model;
-        if (finalVals.opus_model) env.OPENAI_DEFAULT_OPUS_MODEL = finalVals.opus_model;
-        const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
-          modelType: 'openai',
-          env: env as unknown as Record<string, string>,
-        };
-        const { error } = updateSettingsForSource('userSettings', settingsUpdate);
+        // Build the model catalog from the family fields (replaces the
+        // legacy OPENAI_DEFAULT_*_MODEL env vars).
+        const models = (
+          [
+            ['haiku', finalVals.haiku_model],
+            ['sonnet', finalVals.sonnet_model],
+            ['opus', finalVals.opus_model],
+          ] as const
+        )
+          .filter(([, id]) => !!id)
+          .map(([family, id]) => ({ id, name: `${family} (custom)` }));
+        const { error } = activateProviderProfile(providerName || 'openai', {
+          type: 'openai',
+          baseUrl: finalVals.base_url ?? '',
+          apiKey: finalVals.api_key ?? '',
+          authMode: null,
+          models: models.length > 0 ? models : undefined,
+          clearModelCatalog: models.length === 0,
+        });
         if (error) {
           setOAuthStatus({
             state: 'error',
@@ -999,13 +1189,6 @@ function OAuthStatusMessage({
             },
           });
         } else {
-          for (const [k, v] of Object.entries(env)) {
-            if (v === undefined) {
-              delete process.env[k];
-            } else {
-              process.env[k] = v;
-            }
-          }
           // Drop any cached OpenAI client so the next request rebuilds it
           // with the new env vars. Also clear ChatGPT auth file so a prior
           // ChatGPT Subscription login can't leak into the OpenAI Compatible path.
@@ -1133,20 +1316,17 @@ function OAuthStatusMessage({
             void openBrowser(deviceCode.verificationUrl);
             await completeChatGPTDeviceLogin(deviceCode, controller.signal);
             if (cancelled) return;
-            const env: Record<string, string> = {
-              OPENAI_AUTH_MODE: 'chatgpt',
-            };
-            const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
-              modelType: 'openai',
-              model: undefined,
-              models: undefined,
-              env,
-            };
-            const { error } = updateSettingsForSource('userSettings', settingsUpdate);
+            // Save the ChatGPT auth mode into the named provider profile and
+            // activate it. Other providers (e.g. a previously configured
+            // Anthropic-compatible endpoint) keep their profiles intact.
+            const { error } = activateProviderProfile(providerName || 'openai', {
+              type: 'openai',
+              authMode: 'chatgpt',
+              clearModelCatalog: true,
+            });
             if (error) {
               throw new Error('Failed to save settings. Please try again.');
             }
-            for (const [k, v] of Object.entries(env)) process.env[k] = v;
             // Drop any cached OpenAI client built from prior OpenAI Compatible
             // env vars; the ChatGPT Subscription path bypasses the SDK client
             // entirely (uses createChatGPTResponsesStream) but a stale cached
@@ -1274,16 +1454,22 @@ function OAuthStatusMessage({
           return;
         }
 
-        const env: Record<string, string> = {};
-        if (finalVals.base_url) env.GEMINI_BASE_URL = finalVals.base_url;
-        if (finalVals.api_key) env.GEMINI_API_KEY = finalVals.api_key;
-        if (finalVals.haiku_model) env.GEMINI_DEFAULT_HAIKU_MODEL = finalVals.haiku_model;
-        if (finalVals.sonnet_model) env.GEMINI_DEFAULT_SONNET_MODEL = finalVals.sonnet_model;
-        if (finalVals.opus_model) env.GEMINI_DEFAULT_OPUS_MODEL = finalVals.opus_model;
-        const { error } = updateSettingsForSource('userSettings', {
-          modelType: 'gemini',
-          env,
-        } as unknown as Parameters<typeof updateSettingsForSource>[1]);
+        const models = (
+          [
+            ['haiku', finalVals.haiku_model],
+            ['sonnet', finalVals.sonnet_model],
+            ['opus', finalVals.opus_model],
+          ] as const
+        )
+          .filter(([, id]) => !!id)
+          .map(([family, id]) => ({ id, name: `${family} (custom)` }));
+        const { error } = activateProviderProfile(providerName || 'gemini', {
+          type: 'gemini',
+          baseUrl: finalVals.base_url ?? '',
+          apiKey: finalVals.api_key ?? '',
+          models: models.length > 0 ? models : undefined,
+          clearModelCatalog: models.length === 0,
+        });
         if (error) {
           setOAuthStatus({
             state: 'error',
@@ -1299,7 +1485,6 @@ function OAuthStatusMessage({
             },
           });
         } else {
-          for (const [k, v] of Object.entries(env)) process.env[k] = v;
           setOAuthStatus({ state: 'success' });
           void onDone();
         }
@@ -1550,22 +1735,14 @@ function OAuthStatusMessage({
           return;
         }
         const baseUrl = resolveChinaProviderBaseURL(provider.id, accessMode);
-        const env: Record<string, string | undefined> = {
-          OPENAI_AUTH_MODE: undefined,
-          OPENAI_BASE_URL: baseUrl,
-          OPENAI_API_KEY: chinaKeyValue.trim(),
-          OPENAI_MODEL: undefined,
-          OPENAI_DEFAULT_SONNET_MODEL: undefined,
-          OPENAI_DEFAULT_HAIKU_MODEL: undefined,
-          OPENAI_DEFAULT_OPUS_MODEL: undefined,
-        };
-        const settingsUpdate: Parameters<typeof updateSettingsForSource>[1] = {
-          modelType: 'openai',
-          model: modelId,
+        const { error } = activateProviderProfile(providerName || 'openai', {
+          type: 'openai',
+          baseUrl,
+          apiKey: chinaKeyValue.trim(),
+          authMode: null,
           models: [{ id: modelId }],
-          env: env as unknown as Record<string, string>,
-        };
-        const { error } = updateSettingsForSource('userSettings', settingsUpdate);
+          model: modelId,
+        });
         if (error) {
           setOAuthStatus({
             state: 'error',
@@ -1573,13 +1750,6 @@ function OAuthStatusMessage({
             toRetry: { state: 'china_apikey', provider, mode: accessMode, modelId, apiKey: chinaKeyValue },
           });
         } else {
-          for (const [k, v] of Object.entries(env)) {
-            if (v === undefined) {
-              delete process.env[k];
-            } else {
-              process.env[k] = v;
-            }
-          }
           // Drop any cached OpenAI client and ChatGPT auth so the new
           // provider/credentials take effect on the next request.
           clearOpenAIClientCache();

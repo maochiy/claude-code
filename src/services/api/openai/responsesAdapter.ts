@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { normalizeOpenAIUsage, type AnthropicUsage } from '@ant/model-provider'
+import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
 
 type ResponsesInputItem = Record<string, unknown>
@@ -487,9 +488,12 @@ export async function createChatGPTResponsesStream(params: {
   if (auth.accountId) {
     headers['ChatGPT-Account-Id'] = auth.accountId
   }
+  // Honor HTTPS_PROXY/HTTP_PROXY like the Anthropic client does — chatgpt.com
+  // is unreachable from many networks without a proxy.
   const response = await fetchFn(
     'https://chatgpt.com/backend-api/codex/responses',
     {
+      ...getProxyFetchOptions(),
       method: 'POST',
       headers,
       body: JSON.stringify(params.request),

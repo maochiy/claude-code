@@ -84,10 +84,15 @@ const reducer = <T>(state: State<T>, action: Action<T>): State<T> => {
         return state
       }
 
-      // Wrap to first item if at the end
-      const next = item.next || state.optionMap.first
+      // Wrap to first item if at the end. Skip over disabled options
+      // (e.g. group headers) so they can never be focused.
+      let next = item.next || state.optionMap.first
+      let guard = state.optionMap.size
+      while (next && next.disabled && guard-- > 0) {
+        next = next.next || state.optionMap.first
+      }
 
-      if (!next) {
+      if (!next || next.disabled) {
         return state
       }
 
@@ -136,10 +141,15 @@ const reducer = <T>(state: State<T>, action: Action<T>): State<T> => {
         return state
       }
 
-      // Wrap to last item if at the beginning
-      const previous = item.previous || state.optionMap.last
+      // Wrap to last item if at the beginning. Skip over disabled options
+      // (e.g. group headers) so they can never be focused.
+      let previous = item.previous || state.optionMap.last
+      let guard = state.optionMap.size
+      while (previous && previous.disabled && guard-- > 0) {
+        previous = previous.previous || state.optionMap.last
+      }
 
-      if (!previous) {
+      if (!previous || previous.disabled) {
         return state
       }
 

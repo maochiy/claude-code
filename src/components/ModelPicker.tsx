@@ -32,9 +32,25 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js';
-import { getModelOptions } from '../utils/model/modelOptions.js';
+import {
+  getModelOptions,
+  getInactiveProviderOptions,
+  isGroupHeaderValue,
+  makeGroupHeaderOption,
+  parseProviderOptionValue,
+  FIRSTPARTY_PROVIDER_KEY,
+  type ModelOption,
+} from '../utils/model/modelOptions.js';
 import { getConfiguredModel, getConfiguredModels } from '../utils/model/configuredModels.js';
+import {
+  activateProviderProfile,
+  getActiveProviderProfileName,
+  getProviderProfile,
+  isProviderProfileConfigured,
+  resolveProfileType,
+} from '../utils/model/providerProfiles.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
+import { logError } from '../utils/log.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
 import { Byline, KeyboardShortcutHint, Pane } from '@anthropic/ink';
@@ -72,7 +88,6 @@ export function ModelPicker({
 }: Props): React.ReactNode {
   const setAppState = useSetAppState();
   const exitState = useExitOnCtrlCDWithKeybindings();
-  const maxVisible = 10;
 
   const initialValue = initial === null ? NO_PREFERENCE : initial;
   const [focusedValue, setFocusedValue] = useState<string | undefined>(initialValue);
@@ -110,15 +125,42 @@ export function ModelPicker({
 
   // Memoize all derived values to prevent re-renders
   const modelOptions = useMemo(() => getModelOptions(isFastMode ?? false), [isFastMode]);
+  const inactiveProviderOptions = useMemo(() => getInactiveProviderOptions(isFastMode ?? false), [isFastMode]);
+
+  // Grouped list: header for the active provider + its options, then a
+  // header + options for every other configured provider profile. Selecting
+  // an option from another provider's group switches the active provider
+  // (takes effect on the next turn) and applies the model.
+  const groupedOptions = useMemo<ModelOption[]>(() => {
+    if (inactiveProviderOptions.length === 0) return modelOptions;
+    const activeName = getActiveProviderProfileName();
+    const activeTitle = activeName ?? 'Default (firstParty)';
+    // Active provider's options come first, under its own group header.
+    const result: ModelOption[] = [makeGroupHeaderOption(`${activeTitle} (current)`), ...modelOptions];
+    let lastGroup: string | undefined;
+    for (const opt of inactiveProviderOptions) {
+      if (opt.group !== lastGroup) {
+        result.push(makeGroupHeaderOption(opt.group ?? ''));
+        lastGroup = opt.group;
+      }
+      result.push(opt);
+    }
+    return result;
+  }, [modelOptions, inactiveProviderOptions]);
+
   const usesConfiguredCatalog = useMemo(() => getConfiguredModels().length > 0, []);
+
+  // Show more rows when provider groups are present, so group headers and
+  // other providers' models aren't hidden below the "and N more…" fold.
+  const maxVisible = inactiveProviderOptions.length > 0 ? 14 : 10;
 
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
   // is not in the base options but should still be selectable and shown as selected
   const optionsWithInitial = useMemo(() => {
-    if (initial !== null && !modelOptions.some(opt => opt.value === initial)) {
+    if (initial !== null && !groupedOptions.some(opt => opt.value === initial)) {
       return [
-        ...modelOptions,
+        ...groupedOptions,
         {
           value: initial,
           label: modelDisplayString(initial),
@@ -126,8 +168,8 @@ export function ModelPicker({
         },
       ];
     }
-    return modelOptions;
-  }, [modelOptions, initial]);
+    return groupedOptions;
+  }, [groupedOptions, initial]);
 
   const selectOptions = useMemo(
     () =>
@@ -175,6 +217,9 @@ export function ModelPicker({
 
   const handleFocus = useCallback(
     (value: string) => {
+      // Group headers are non-selectable; keep the effort panel showing the
+      // last real model when focus passes over one.
+      if (isGroupHeaderValue(value)) return;
       setFocusedValue(value);
       if (!hasToggledEffort && effortValue === undefined) {
         setEffort(getDefaultEffortLevelForOption(value));
@@ -212,6 +257,48 @@ export function ModelPicker({
   );
 
   function handleSelect(value: string): void {
+    // Cross-provider option (`xiuda::glm-5.3`, `codex::default`): activate
+    // that provider first, then apply the model. The switch takes effect on
+    // the next turn — the current turn keeps its existing client.
+    const providerRef = parseProviderOptionValue(value);
+    if (providerRef) {
+      const activeName = getActiveProviderProfileName();
+      const isFirstParty = providerRef.provider === FIRSTPARTY_PROVIDER_KEY;
+      if (providerRef.provider !== activeName) {
+        const options = isFirstParty
+          ? { type: 'anthropic' as const, baseUrl: '', apiKey: '', clearModelCatalog: true }
+          : {};
+        // Guard: never activate a provider without credentials — requests
+        // would go out unauthenticated and fail with 401 / "Not logged in".
+        if (!isFirstParty) {
+          const targetProfile = getProviderProfile(providerRef.provider);
+          if (!isProviderProfileConfigured(targetProfile)) {
+            logError(
+              new Error(`Provider "${providerRef.provider}" has no API key configured — run /login to set it up.`),
+            );
+            return;
+          }
+        }
+        const { error } = activateProviderProfile(providerRef.provider, options);
+        if (error) {
+          logError(error);
+          return;
+        }
+        // Clear the cached OpenAI client when entering OR leaving an
+        // openai-protocol provider — the cached client embeds old env vars.
+        const targetType = isFirstParty
+          ? 'anthropic'
+          : resolveProfileType(providerRef.provider, getProviderProfile(providerRef.provider));
+        if (providerRef.provider === 'openai' || targetType === 'openai' || activeName === 'openai') {
+          void import('src/services/api/openai/client.js')
+            .then(({ clearOpenAIClientCache }) => clearOpenAIClientCache())
+            .catch(() => {});
+        }
+      }
+      onSelect(providerRef.isDefault || providerRef.modelId === 'firstparty' ? null : providerRef.modelId, undefined);
+      return;
+    }
+
     const selectedModel = resolveOptionModel(value);
     const selectedConfiguredModel = selectedModel ? getConfiguredModel(selectedModel) : undefined;
     const selectedSupportsEffort =

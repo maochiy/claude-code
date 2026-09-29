@@ -1,4 +1,5 @@
 import { getAPIProvider } from './providers.js'
+import { getProfileForProviderType } from './providerProfiles.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { ConfiguredModel, SettingsJson } from '../settings/types.js'
 
@@ -145,6 +146,12 @@ export function getInitialConfiguredModels(
   }
   if (settings.modelType === provider && settings.models?.length) {
     return normalizeConfiguredModels(settings.models)
+  }
+  // Provider profiles let inactive providers keep their own catalog.
+  const profileModels = getProfileForProviderType(provider, settings)?.profile
+    .models
+  if (profileModels?.length) {
+    return normalizeConfiguredModels(profileModels)
   }
   return getLegacyConfiguredModels(provider)
 }

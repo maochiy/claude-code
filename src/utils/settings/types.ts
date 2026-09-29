@@ -60,6 +60,48 @@ export const ConfiguredModelSchema = lazySchema(() =>
 )
 
 /**
+ * Schema for a single provider profile. Profiles are keyed by a user-chosen
+ * provider name (e.g. "xiuda", "codex") and let multiple providers keep
+ * their own connection config and model catalog side by side. The active
+ * one is selected via `activeProvider`; `modelType` mirrors the active
+ * profile's protocol for the request pipeline.
+ */
+export const ProviderProfileSchema = lazySchema(() =>
+  z.object({
+    type: z
+      .enum(['anthropic', 'openai', 'gemini', 'grok'])
+      .optional()
+      .describe(
+        'Protocol of this provider. Optional for legacy type-keyed entries where the key names the type',
+      ),
+    baseUrl: z
+      .string()
+      .optional()
+      .describe('Base URL of the provider endpoint'),
+    apiKey: z
+      .string()
+      .optional()
+      .describe('API key / auth token for the provider'),
+    authMode: z
+      .enum(['chatgpt'])
+      .optional()
+      .describe(
+        'Auth mode for openai profiles. "chatgpt" uses ChatGPT subscription OAuth',
+      ),
+    models: z
+      .array(ConfiguredModelSchema())
+      .optional()
+      .describe(
+        'Model catalog of this provider. Model IDs are sent to the provider unchanged',
+      ),
+    defaultModel: z
+      .string()
+      .optional()
+      .describe('Default model id used when this provider is activated'),
+  }),
+)
+
+/**
  * Schema for permissions section
  */
 export const PermissionsSchema = lazySchema(() =>
@@ -398,6 +440,18 @@ export const SettingsSchema = lazySchema(() =>
           'API provider type. "anthropic" uses the Anthropic API (default), "openai" uses the OpenAI Chat Completions API, "gemini" uses the Gemini API, and "grok" uses the xAI Grok API (OpenAI-compatible). ' +
             'Use model + models for a selectable provider model catalog. Legacy single-model environment variables remain supported.',
         ),
+      providers: z
+        .record(z.string(), ProviderProfileSchema())
+        .optional()
+        .describe(
+          'Named provider profiles (connection config + model catalog), keyed by a user-chosen name. ' +
+            'The active profile is selected via activeProvider; activating a profile copies its ' +
+            'protocol into modelType and its config into the top-level model/models/env fields.',
+        ),
+      activeProvider: z
+        .string()
+        .optional()
+        .describe('Name of the currently active provider profile'),
       model: z
         .string()
         .optional()
@@ -1237,6 +1291,8 @@ export type DeniedMcpServerEntry = z.infer<
 >
 export type SettingsJson = z.infer<ReturnType<typeof SettingsSchema>>
 export type ConfiguredModel = z.infer<ReturnType<typeof ConfiguredModelSchema>>
+export type ProviderProfile = z.infer<ReturnType<typeof ProviderProfileSchema>>
+export type ProviderProfileType = 'anthropic' | 'openai' | 'gemini' | 'grok'
 
 /**
  * Type guard for MCP server entry with serverName

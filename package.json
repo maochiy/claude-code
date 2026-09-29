@@ -46,6 +46,7 @@
     "build:vite:only": "vite build",
     "build:bun": "bun run build.ts",
     "dev": "bun run scripts/dev.ts",
+    "dev:real": "CLAUDE_CODE_USER_SETTINGS_FILE=settings.json bun run scripts/dev.ts",
     "dev:inspect": "bun run scripts/dev-debug.ts",
     "prepublishOnly": "bun run build:vite",
     "lint": "biome lint .",

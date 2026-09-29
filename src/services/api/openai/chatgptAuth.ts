@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
+import { getProxyFetchOptions } from 'src/utils/proxy.js'
 
 const ISSUER = 'https://auth.openai.com'
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -169,6 +170,7 @@ async function postJSON<T>(
   body: Record<string, string>,
 ): Promise<T> {
   const res = await fetch(url, {
+    ...getProxyFetchOptions(),
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -181,6 +183,7 @@ async function postJSON<T>(
 
 async function postForm<T>(url: string, body: URLSearchParams): Promise<T> {
   const res = await fetch(url, {
+    ...getProxyFetchOptions(),
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
@@ -233,6 +236,7 @@ async function pollForAuthorizationCode(
   while (Date.now() - started < 15 * 60 * 1000) {
     if (signal?.aborted) throw new Error('ChatGPT login cancelled')
     const res = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
+      ...getProxyFetchOptions(),
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -1,8 +1,15 @@
 import type { Command } from '../commands.js'
 import type { LocalCommandCall } from '../types/command.js'
 import { getAPIProvider } from '../utils/model/providers.js'
-import { updateSettingsForSource } from '../utils/settings/settings.js'
-import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
+import {
+  activateProviderProfile,
+  getConfiguredProviderProfiles,
+  isProviderProfileType,
+} from '../utils/model/providerProfiles.js'
+import {
+  updateSettingsForSource,
+  getSettings_DEPRECATED,
+} from '../utils/settings/settings.js'
 import { applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
 
 function getEnvVarForProvider(provider: string): string {
@@ -39,10 +46,19 @@ function getMergedEnv(): Record<string, string> {
 const call: LocalCommandCall = async (args, _context) => {
   const arg = args.trim().toLowerCase()
 
-  // No argument: show current provider
+  // No argument: show current provider and any saved profiles
   if (!arg) {
     const current = getAPIProvider()
-    return { type: 'text', value: `Current API provider: ${current}` }
+    const profiles = getConfiguredProviderProfiles()
+    const lines = [`Current API provider: ${current}`]
+    if (profiles.length > 0) {
+      lines.push('Saved provider profiles:')
+      for (const { name, type } of profiles) {
+        lines.push(`  · ${name}${name === type ? '' : ` (${type})`}`)
+      }
+      lines.push('Switch with /provider <name>')
+    }
+    return { type: 'text', value: lines.join('\n') }
   }
 
   // unset - clear settings, fallback to env vars
@@ -78,86 +94,64 @@ const call: LocalCommandCall = async (args, _context) => {
     }
   }
 
-  // Check env vars when switching to openai (including settings.env)
-  if (arg === 'openai') {
-    const mergedEnv = getMergedEnv()
-    const hasChatGPTAuth = mergedEnv.OPENAI_AUTH_MODE === 'chatgpt'
-    const hasKey = !!mergedEnv.OPENAI_API_KEY
-    const hasUrl = !!mergedEnv.OPENAI_BASE_URL
-    if (!hasChatGPTAuth && (!hasKey || !hasUrl)) {
-      updateSettingsForSource('userSettings', { modelType: 'openai' })
-      const missing = []
-      if (!hasKey) missing.push('OPENAI_API_KEY')
-      if (!hasUrl) missing.push('OPENAI_BASE_URL')
+  // Profile-backed providers: accept either a profile NAME (e.g. "xiuda")
+  // or a legacy type name ("openai" → activates the profile saved under that
+  // name when one exists). Snapshot the outgoing provider into its own
+  // profile and restore the target provider's saved config, so multiple
+  // providers can coexist.
+  const namedProfile = getConfiguredProviderProfiles().find(p => p.name === arg)
+  if (namedProfile || isProviderProfileType(arg)) {
+    const targetName = namedProfile?.name ?? arg
+    const { error } = activateProviderProfile(targetName)
+    if (error) {
       return {
         type: 'text',
-        value: `Switched to OpenAI provider.\nWarning: Missing env vars: ${missing.join(', ')}\nConfigure them via /login or set manually.`,
+        value: `Failed to switch provider: ${error.message}`,
       }
+    }
+    // Ensure settings.env gets applied to process.env
+    applyConfigEnvironmentVariables()
+    if (namedProfile?.type === 'openai' || arg === 'openai') {
+      const { clearOpenAIClientCache } = await import(
+        'src/services/api/openai/client.js'
+      )
+      clearOpenAIClientCache()
+    }
+    return {
+      type: 'text',
+      value: `API provider set to ${targetName}. Takes effect on the next turn.`,
     }
   }
 
-  // Check env vars when switching to grok (including settings.env)
+  // Check env vars when switching to grok via legacy shell env (no profile saved)
   if (arg === 'grok') {
     const mergedEnv = getMergedEnv()
     const hasKey = !!(mergedEnv.GROK_API_KEY || mergedEnv.XAI_API_KEY)
     if (!hasKey) {
-      updateSettingsForSource('userSettings', { modelType: 'grok' })
       return {
         type: 'text',
-        value: `Switched to Grok provider.\nWarning: Missing env var: GROK_API_KEY (or XAI_API_KEY)\nConfigure it via settings.json env or set manually.`,
+        value: `No saved profile for grok.\nWarning: Missing env var: GROK_API_KEY (or XAI_API_KEY)\nConfigure it via /login or settings.json env.`,
       }
     }
-  }
-
-  // Check env vars when switching to gemini (including settings.env)
-  if (arg === 'gemini') {
-    const mergedEnv = getMergedEnv()
-    const hasKey = !!mergedEnv.GEMINI_API_KEY
-    // GEMINI_BASE_URL is optional (has default)
-    if (!hasKey) {
-      updateSettingsForSource('userSettings', { modelType: 'gemini' })
-      return {
-        type: 'text',
-        value: `Switched to Gemini provider.\nWarning: Missing env var: GEMINI_API_KEY\nConfigure it via /login or set manually.`,
-      }
-    }
-  }
-
-  // Handle different provider types
-  // - 'anthropic', 'openai', 'gemini' are stored in settings.json (persistent)
-  // - 'bedrock', 'vertex', 'foundry' are env-only (do NOT touch settings.json)
-  if (
-    arg === 'anthropic' ||
-    arg === 'openai' ||
-    arg === 'gemini' ||
-    arg === 'grok'
-  ) {
-    // Clear any cloud provider env vars to avoid conflicts
-    delete process.env.CLAUDE_CODE_USE_BEDROCK
-    delete process.env.CLAUDE_CODE_USE_VERTEX
-    delete process.env.CLAUDE_CODE_USE_FOUNDRY
-    delete process.env.CLAUDE_CODE_USE_OPENAI
-    delete process.env.CLAUDE_CODE_USE_GEMINI
-    delete process.env.CLAUDE_CODE_USE_GROK
-    // Update settings.json
-    updateSettingsForSource('userSettings', { modelType: arg })
-    // Ensure settings.env gets applied to process.env
-    applyConfigEnvironmentVariables()
-    return { type: 'text', value: `API provider set to ${arg}.` }
-  } else {
-    // Cloud providers: set env vars only, do NOT touch settings.json
-    delete process.env.CLAUDE_CODE_USE_OPENAI
-    delete process.env.OPENAI_API_KEY
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.CLAUDE_CODE_USE_GEMINI
-    delete process.env.CLAUDE_CODE_USE_GROK
-    process.env[getEnvVarForProvider(arg)] = '1'
-    // Do not modify settings.json - cloud providers controlled solely by env vars
-    applyConfigEnvironmentVariables()
+    updateSettingsForSource('userSettings', { modelType: 'grok' })
     return {
       type: 'text',
-      value: `API provider set to ${arg} (via environment variable).`,
+      value: `API provider set to grok (via environment variable).`,
     }
+  }
+
+  // Cloud providers: set env vars only, do NOT touch settings.json
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_BASE_URL
+  delete process.env.CLAUDE_CODE_USE_GEMINI
+  delete process.env.CLAUDE_CODE_USE_GROK
+  process.env[getEnvVarForProvider(arg)] = '1'
+  // Do not modify settings.json - cloud providers controlled solely by env vars
+  applyConfigEnvironmentVariables()
+  return {
+    type: 'text',
+    value: `API provider set to ${arg} (via environment variable).`,
   }
 }
 

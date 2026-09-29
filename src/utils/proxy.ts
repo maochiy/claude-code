@@ -56,13 +56,61 @@ export function getAddressFamily(options: LookupOptions): 0 | 4 | 6 {
 
 type EnvLike = Record<string, string | undefined>
 
+let cachedSystemProxyUrl: string | undefined | null = null
+
+/**
+ * Read the OS-level proxy configuration (macOS `scutil --proxy` only).
+ * Command-line tools don't inherit the macOS system proxy automatically, so
+ * this is a fallback for users who configured a proxy in System Settings but
+ * never exported HTTPS_PROXY in their shell. Cached for the process lifetime.
+ * Disable with CLAUDE_CODE_NO_SYSTEM_PROXY=1.
+ */
+function getSystemProxyUrl(): string | undefined {
+  if (process.env.CLAUDE_CODE_NO_SYSTEM_PROXY === '1') return undefined
+  if (cachedSystemProxyUrl !== null) return cachedSystemProxyUrl
+  cachedSystemProxyUrl = undefined
+  if (process.platform === 'darwin' && typeof Bun !== 'undefined') {
+    try {
+      const proc = Bun.spawnSync(['scutil', '--proxy'])
+      const output = proc.stdout.toString()
+      // scutil lines are indented and space-padded: "  HTTPEnable : 1"
+      const httpsEnabled = /^\s*HTTPEnable\s*:\s*1\s*$/m.test(output)
+      const httpsProxy = output.match(/^\s*HTTPSProxy\s*:\s*(\S+)\s*$/m)?.[1]
+      const httpsPort = output.match(/^\s*HTTPSPort\s*:\s*(\d+)\s*$/m)?.[1]
+      if (httpsEnabled && httpsProxy && httpsPort) {
+        cachedSystemProxyUrl = `http://${httpsProxy}:${httpsPort}`
+      } else {
+        const socksEnabled = /^\s*SOCKSEnable\s*:\s*1\s*$/m.test(output)
+        const socksProxy = output.match(/^\s*SOCKSProxy\s*:\s*(\S+)\s*$/m)?.[1]
+        const socksPort = output.match(/^\s*SOCKSPort\s*:\s*(\d+)\s*$/m)?.[1]
+        if (socksEnabled && socksProxy && socksPort) {
+          cachedSystemProxyUrl = `socks5://${socksProxy}:${socksPort}`
+        }
+      }
+    } catch {
+      // scutil unavailable / non-macOS — no system proxy.
+    }
+  }
+  return cachedSystemProxyUrl
+}
+
 /**
  * Get the active proxy URL if one is configured
- * Prefers lowercase variants over uppercase (https_proxy > HTTPS_PROXY > http_proxy > HTTP_PROXY)
+ * Prefers lowercase variants over uppercase (https_proxy > HTTPS_PROXY > http_proxy > HTTP_PROXY).
+ * Falls back to the OS-level proxy settings (macOS system proxy) when no
+ * environment variable is set.
  * @param env Environment variables to check (defaults to process.env for production use)
  */
 export function getProxyUrl(env: EnvLike = process.env): string | undefined {
-  return env.https_proxy || env.HTTPS_PROXY || env.http_proxy || env.HTTP_PROXY
+  const fromEnv =
+    env.https_proxy || env.HTTPS_PROXY || env.http_proxy || env.HTTP_PROXY
+  if (fromEnv) return fromEnv
+  if (env === process.env) {
+    // Only fall back to the OS proxy for the real environment — synthetic
+    // env objects (tests, SSH tunnels) must keep deterministic behavior.
+    return getSystemProxyUrl()
+  }
+  return undefined
 }
 
 /**

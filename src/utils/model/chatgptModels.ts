@@ -54,10 +54,27 @@ export const CHATGPT_CODEX_MAX_OUTPUT_TOKENS = 128_000
 
 /**
  * ChatGPT OAuth / Codex model picker options.
- * Newest GPT-5.6 family first; previous generation models retained for
- * users still on those ids.
+ *
+ * Current lineup (as of Sep 2026):
+ * - GPT-6 Sol / Luna: newest generation, rolling out to Codex (Plus and higher for Sol).
+ * - GPT-5.6 Sol / Terra / Luna: current family (rolled out 2026-07-09).
+ * - gpt-5.5: previous flagship — retires from Codex on 2026-10-14 (API still available).
+ * - gpt-5.3-codex-spark: research preview, ChatGPT Pro only.
+ *
+ * Retired from Codex (ChatGPT sign-in) and therefore NOT listed:
+ * gpt-5.4 / gpt-5.4-mini (2026-08-31), gpt-5.3-codex, gpt-5.2 (deprecated).
  */
 export const CHATGPT_CODEX_MODEL_OPTIONS: ChatGPTCodexModelOption[] = [
+  {
+    value: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    description: 'Newest flagship for complex coding and agentic workflows',
+  },
+  {
+    value: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    description: 'Newest fast model for focused, repeatable tasks',
+  },
   {
     value: 'gpt-5.6-sol',
     label: 'gpt-5.6-sol',
@@ -78,34 +95,12 @@ export const CHATGPT_CODEX_MODEL_OPTIONS: ChatGPTCodexModelOption[] = [
   {
     value: 'gpt-5.5',
     label: 'GPT-5.5',
-    description:
-      'Frontier model for complex coding, research, and real-world work',
-  },
-  {
-    value: 'gpt-5.4',
-    label: 'GPT-5.4',
-    description: 'Strong model for everyday coding',
-  },
-  {
-    value: 'gpt-5.4-mini',
-    label: 'GPT-5.4-Mini',
-    description:
-      'Small, fast, and cost-efficient model for simpler coding tasks',
-  },
-  {
-    value: 'gpt-5.3-codex',
-    label: 'GPT-5.3-Codex',
-    description: 'Coding-optimized model',
+    description: 'Previous flagship · retires from Codex on Oct 14, 2026',
   },
   {
     value: 'gpt-5.3-codex-spark',
     label: 'GPT-5.3-Codex-Spark',
-    description: 'Ultra-fast coding model',
-  },
-  {
-    value: 'gpt-5.2',
-    label: 'GPT-5.2',
-    description: 'Optimized for professional work and long-running agents',
+    description: 'Ultra-fast research preview (ChatGPT Pro)',
   },
 ]
 
@@ -125,10 +120,17 @@ export function isGpt56FamilyModel(model: string): boolean {
   return normalized === 'gpt-5.6' || normalized.startsWith('gpt-5.6-')
 }
 
+/** Whether this is a GPT-6 family model id (Sol/Luna or bare `gpt-6`). */
+export function isGpt6FamilyModel(model: string): boolean {
+  const normalized = normalizeChatGPTModelId(model)
+  return normalized === 'gpt-6' || normalized.startsWith('gpt-6-')
+}
+
 export function isChatGPTCodexReasoningModel(model: string): boolean {
   const normalized = normalizeChatGPTModelId(model)
   return (
     isGpt56FamilyModel(model) ||
+    isGpt6FamilyModel(model) ||
     CHATGPT_CODEX_MODEL_OPTIONS.some(
       option => option.value.toLowerCase() === normalized,
     )
@@ -145,7 +147,7 @@ export function isChatGPTCodexReasoningModel(model: string): boolean {
 export function getChatGPTModelContextWindow(
   model: string,
 ): number | undefined {
-  if (!isGpt56FamilyModel(model)) {
+  if (!isGpt56FamilyModel(model) && !isGpt6FamilyModel(model)) {
     return undefined
   }
   return isChatGPTAuthMode()
