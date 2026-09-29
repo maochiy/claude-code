@@ -1,4 +1,5 @@
 import { chmod, mkdir, readFile, unlink, writeFile } from 'fs/promises'
+import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -43,6 +44,18 @@ type StoredAuthFile = {
 
 function authFilePath(): string {
   return join(getClaudeConfigHomeDirLocal(), AUTH_FILE)
+}
+
+/**
+ * Sync check for the /login UI: is a ChatGPT auth file present on disk?
+ * File existence ≈ logged in (token validity is checked at request time).
+ */
+export function hasStoredChatGPTAuth(): boolean {
+  try {
+    return existsSync(authFilePath())
+  } catch {
+    return false
+  }
 }
 
 function getClaudeConfigHomeDirLocal(): string {

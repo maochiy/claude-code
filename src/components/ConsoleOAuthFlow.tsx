@@ -27,9 +27,11 @@ import {
   getConfiguredProviderProfiles,
   getProviderProfile,
   resolveProfileType,
+  saveProviderProfile,
   type ProviderProfileType,
 } from '../utils/model/providerProfiles.js';
 import { getProviderProfileLabel } from '../utils/model/modelOptions.js';
+import { hasStoredChatGPTAuth } from '../services/api/openai/chatgptAuth.js';
 import { CHINA_LLM_PROVIDERS, type ProviderPreset, resolveChinaProviderBaseURL } from 'src/utils/chinaLlmProviders.js';
 import {
   getInitialConfiguredModels,
@@ -51,6 +53,8 @@ type Props = {
 type OAuthStatus =
   | { state: 'provider_name' } // Step 1: name the provider before choosing a protocol
   | { state: 'provider_list' } // Entry: saved providers + add-new + first-party logins
+  | { state: 'provider_actions' } // Detail for one profile: Proxy / credentials / back
+  | { state: 'proxy_edit' } // Proxy edit screen (echoes the saved URL, empty if none)
   | { state: 'idle' } // Login method menu
   | { state: 'platform_setup' } // Show platform setup info (Bedrock/Vertex/Foundry)
   | { state: 'custom_platform_models' }
@@ -148,6 +152,53 @@ function ProviderNameScreen({ onDone }: { onDone(name: string): void }): React.R
         />
       </Box>
       <Text dimColor>Enter to continue · Esc to skip</Text>
+    </Box>
+  );
+}
+
+/**
+ * Proxy edit screen for a provider profile. Echoes the previously configured
+ * proxy URL in the input (empty when none was configured); empty input on
+ * save means direct connection.
+ */
+function ProviderProxyScreen({
+  providerName,
+  initialProxy,
+  onDone,
+}: {
+  providerName: string;
+  initialProxy: string;
+  onDone(proxy: string): void;
+}): React.ReactNode {
+  const [value, setValue] = useState(initialProxy);
+  const [cursorOffset, setCursorOffset] = useState(initialProxy.length);
+  const columns = useTerminalSize().columns - 20;
+
+  const submit = useCallback(() => {
+    onDone(value.trim());
+  }, [value, onDone]);
+
+  useKeybinding('confirm:no', () => onDone(initialProxy), { context: 'Confirmation' });
+
+  return (
+    <Box flexDirection="column" gap={1} marginTop={1}>
+      <Text bold>
+        Proxy for <Text color="suggestion">{providerName}</Text>
+      </Text>
+      <Text dimColor>Leave empty for direct connection (no proxy).</Text>
+      <Box>
+        <Text>{'> '}</Text>
+        <TextInput
+          value={value}
+          onChange={setValue}
+          onSubmit={submit}
+          cursorOffset={cursorOffset}
+          onChangeCursorOffset={setCursorOffset}
+          columns={columns}
+          focus={true}
+        />
+      </Box>
+      <Text dimColor>Enter to save · Esc to cancel</Text>
     </Box>
   );
 }
@@ -595,27 +646,116 @@ function OAuthStatusMessage({
                   setOAuthStatus({ state: 'platform_setup' });
                   return;
                 }
-                // Existing profile: reconfigure it under the same name.
+                // Existing profile: open its detail (Proxy / credentials).
                 const entry = profiles.find(p => p.name === value);
                 if (!entry) return;
                 setProviderName(entry.name);
-                if (entry.type === 'openai' && entry.profile.authMode === 'chatgpt') {
-                  setOAuthStatus({ state: 'chatgpt_subscription', phase: 'requesting' });
-                } else if (entry.type === 'anthropic') {
-                  setOAuthStatus({ state: 'custom_platform_models' });
-                } else if (entry.type === 'openai') {
-                  setOAuthStatus({ state: 'openai_chat_api_models' });
-                } else if (entry.type === 'gemini') {
-                  setOAuthStatus({ state: 'gemini_api_models' });
-                } else {
-                  // grok has no setup form — activate directly.
-                  const { error } = activateProviderProfile(entry.name);
-                  setOAuthStatus({ state: error ? 'idle' : 'success' });
-                }
+                setOAuthStatus({ state: 'provider_actions' });
               }}
             />
           </Box>
         </Box>
+      );
+    }
+
+    case 'provider_actions': {
+      const profile = providerName ? getProviderProfile(providerName) : undefined;
+      const type = resolveProfileType(providerName, profile);
+      if (!profile || !type) {
+        setOAuthStatus({ state: 'provider_list' });
+        return null;
+      }
+      const typeLabel = getProviderProfileLabel(type);
+      const isChatGPTAccount = type === 'openai' && profile.authMode === 'chatgpt';
+      const chatgptLoggedIn = isChatGPTAccount && hasStoredChatGPTAuth();
+      const actions: Array<{ label: React.ReactNode; value: string }> = [
+        {
+          label: (
+            <Text>
+              Proxy · <Text dimColor>configure a proxy URL for this provider</Text>
+              {'\n'}
+            </Text>
+          ),
+          value: 'proxy',
+        },
+      ];
+      if (isChatGPTAccount) {
+        actions.push({
+          label: (
+            <Text>
+              {chatgptLoggedIn ? 'Re-authorize account' : 'Log in'} ·{' '}
+              <Text dimColor>{chatgptLoggedIn ? 'already logged in, sign in again' : 'opens the browser'}</Text>
+              {'\n'}
+            </Text>
+          ),
+          value: 'auth',
+        });
+      } else {
+        actions.push({
+          label: (
+            <Text>
+              Reconfigure credentials &amp; models · <Text dimColor>base URL, API key, model catalog</Text>
+              {'\n'}
+            </Text>
+          ),
+          value: 'credentials',
+        });
+      }
+      actions.push({
+        label: (
+          <Text>
+            Back · <Text dimColor>provider list</Text>
+            {'\n'}
+          </Text>
+        ),
+        value: 'back',
+      });
+      return (
+        <Box flexDirection="column" gap={1} marginTop={1}>
+          <Text bold>
+            {providerName} · <Text dimColor>{typeLabel}</Text>
+          </Text>
+          <Box>
+            <Select
+              options={actions}
+              onChange={value => {
+                if (value === 'proxy') {
+                  setOAuthStatus({ state: 'proxy_edit' });
+                } else if (value === 'auth') {
+                  setOAuthStatus({ state: 'chatgpt_subscription', phase: 'requesting' });
+                } else if (value === 'credentials') {
+                  setOAuthStatus({
+                    state:
+                      type === 'anthropic'
+                        ? 'custom_platform_models'
+                        : type === 'gemini'
+                          ? 'gemini_api_models'
+                          : 'openai_chat_api_models',
+                  });
+                } else {
+                  setOAuthStatus({ state: 'provider_list' });
+                }
+              }}
+            />
+          </Box>
+          <Text dimColor>Esc to cancel</Text>
+        </Box>
+      );
+    }
+
+    case 'proxy_edit': {
+      const savedProxy = providerName ? (getProviderProfile(providerName)?.proxy ?? '') : '';
+      return (
+        <ProviderProxyScreen
+          providerName={providerName || 'provider'}
+          initialProxy={savedProxy}
+          onDone={proxy => {
+            if (providerName) {
+              saveProviderProfile(providerName, { proxy: proxy || undefined });
+            }
+            setOAuthStatus({ state: 'provider_actions' });
+          }}
+        />
       );
     }
 
@@ -746,10 +886,11 @@ function OAuthStatusMessage({
                   setOAuthStatus({ state: 'china_provider_select', activeIndex: 0 });
                 } else if (value === 'chatgpt_subscription') {
                   logEvent('tengu_chatgpt_subscription_selected', {});
-                  setOAuthStatus({
-                    state: 'chatgpt_subscription',
-                    phase: 'requesting',
-                  });
+                  const name = providerName || 'openai';
+                  setProviderName(name);
+                  // Create the profile shell so provider_actions can render it.
+                  saveProviderProfile(name, { type: 'openai', authMode: 'chatgpt' });
+                  setOAuthStatus({ state: 'provider_actions' });
                 } else if (value === 'gemini_api') {
                   logEvent('tengu_gemini_api_selected', {});
                   setOAuthStatus({ state: 'gemini_api_models' });
