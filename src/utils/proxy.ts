@@ -98,7 +98,8 @@ function getSystemProxyUrl(): string | undefined {
  * Get the active proxy URL if one is configured
  * Prefers lowercase variants over uppercase (https_proxy > HTTPS_PROXY > http_proxy > HTTP_PROXY).
  * Falls back to the OS-level proxy settings (macOS system proxy) when no
- * environment variable is set.
+ * environment variable is set — the local proxy (e.g. Clash rule mode) then
+ * decides per-domain whether to go direct or through a node.
  * @param env Environment variables to check (defaults to process.env for production use)
  */
 export function getProxyUrl(env: EnvLike = process.env): string | undefined {
@@ -333,7 +334,15 @@ export function getWebSocketProxyUrl(url: string): string | undefined {
  *   requests get misrouted to api.anthropic.com. Only the Anthropic SDK client
  *   should pass `true` here.
  */
-export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
+export function getProxyFetchOptions(opts?: {
+  forAnthropicAPI?: boolean
+  /**
+   * Explicit proxy URL from the active provider profile. `''` forces a
+   * direct connection (ignores env/system proxy); a URL routes through it;
+   * undefined falls back to the standard env/system lookup.
+   */
+  proxyOverride?: string
+}): {
   tls?: TLSConfig
   dispatcher?: undici.Dispatcher
   proxy?: string
@@ -350,6 +359,14 @@ export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
     if (unixSocket && typeof Bun !== 'undefined') {
       return { ...base, unix: unixSocket }
     }
+  }
+
+  // Per-provider proxy override (profile.proxy): '' = direct, URL = proxy.
+  if (opts?.proxyOverride !== undefined) {
+    if (opts.proxyOverride === '') {
+      return { ...base, ...getTLSFetchOptions() }
+    }
+    return { ...base, proxy: opts.proxyOverride, ...getTLSFetchOptions() }
   }
 
   const proxyUrl = getProxyUrl()

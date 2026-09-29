@@ -17,6 +17,7 @@ import {
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import { getActiveProviderProxyUrl } from 'src/utils/model/providerProfiles.js'
 import {
   getIsNonInteractiveSession,
   getSessionId,
@@ -145,6 +146,7 @@ export async function getAnthropicClient({
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
+      proxyOverride: getActiveProviderProxyUrl(),
     }) as ClientOptions['fetchOptions'],
     ...(resolvedFetch && {
       fetch: resolvedFetch,

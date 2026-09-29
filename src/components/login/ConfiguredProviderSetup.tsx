@@ -6,7 +6,7 @@ import type { ConfiguredModel } from '../../utils/settings/types.js';
 import { Select } from '../CustomSelect/select.js';
 import TextInput from '../TextInput.js';
 
-type ConnectionField = 'base_url' | 'api_key';
+type ConnectionField = 'base_url' | 'api_key' | 'proxy';
 type ModelField = 'id' | 'name' | 'description' | 'context_window' | 'effort_levels';
 type Phase = 'connection' | 'model_form' | 'after_add' | 'model_list' | 'model_actions' | 'default_model';
 
@@ -21,6 +21,7 @@ export type ConfiguredModelDraft = {
 type SaveValues = {
   baseUrl: string;
   apiKey: string;
+  proxy: string;
   models: ConfiguredModel[];
   defaultModelId: string;
 };
@@ -30,13 +31,14 @@ type Props = {
   description?: string;
   initialBaseUrl: string;
   initialApiKey: string;
+  initialProxy?: string;
   initialModels: ConfiguredModel[];
   initialDefaultModelId?: string;
   onSave(values: SaveValues): void;
   onCancel(): void;
 };
 
-const CONNECTION_FIELDS: ConnectionField[] = ['base_url', 'api_key'];
+const CONNECTION_FIELDS: ConnectionField[] = ['base_url', 'api_key', 'proxy'];
 const MODEL_FIELDS: ModelField[] = ['id', 'name', 'description', 'context_window', 'effort_levels'];
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -151,6 +153,7 @@ export function ConfiguredProviderSetup({
   description,
   initialBaseUrl,
   initialApiKey,
+  initialProxy,
   initialModels,
   initialDefaultModelId,
   onSave,
@@ -159,6 +162,7 @@ export function ConfiguredProviderSetup({
   const [phase, setPhase] = useState<Phase>('connection');
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [apiKey, setApiKey] = useState(initialApiKey);
+  const [proxy, setProxy] = useState(initialProxy ?? '');
   const [connectionField, setConnectionField] = useState<ConnectionField>('base_url');
   const [connectionCursorOffset, setConnectionCursorOffset] = useState(initialBaseUrl.length);
   const [models, setModels] = useState<ConfiguredModel[]>(initialModels);
@@ -173,12 +177,25 @@ export function ConfiguredProviderSetup({
   const previousConnectionField = useRef(connectionField);
   const previousModelField = useRef(modelField);
 
+  const connectionValueForField = useCallback(
+    (field: ConnectionField): string => {
+      switch (field) {
+        case 'base_url':
+          return baseUrl;
+        case 'api_key':
+          return apiKey;
+        case 'proxy':
+          return proxy;
+      }
+    },
+    [apiKey, baseUrl, proxy],
+  );
+
   useEffect(() => {
     if (previousConnectionField.current === connectionField) return;
-    const value = connectionField === 'base_url' ? baseUrl : apiKey;
-    setConnectionCursorOffset(value.length);
+    setConnectionCursorOffset(connectionValueForField(connectionField).length);
     previousConnectionField.current = connectionField;
-  }, [apiKey, baseUrl, connectionField]);
+  }, [connectionField, connectionValueForField]);
 
   useEffect(() => {
     if (previousModelField.current === modelField) return;
@@ -233,14 +250,34 @@ export function ConfiguredProviderSetup({
           return;
         }
       }
+      if (proxy.trim()) {
+        try {
+          const parsedProxy = new URL(proxy.trim());
+          if (
+            parsedProxy.protocol !== 'http:' &&
+            parsedProxy.protocol !== 'https:' &&
+            parsedProxy.protocol !== 'socks5:'
+          ) {
+            throw new Error('unsupported protocol');
+          }
+        } catch {
+          setError(
+            'Invalid Proxy URL. Use http://host:port or socks5://host:port, or leave empty for direct connection.',
+          );
+          setPhase('connection');
+          setConnectionField('proxy');
+          return;
+        }
+      }
       onSave({
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim(),
+        proxy: proxy.trim(),
         models: nextModels,
         defaultModelId: resolvedDefault,
       });
     },
-    [apiKey, baseUrl, defaultModelId, models, onSave, startAddModel],
+    [apiKey, baseUrl, defaultModelId, models, onSave, proxy, startAddModel],
   );
 
   const completeModelForm = useCallback(() => {
@@ -329,6 +366,10 @@ export function ConfiguredProviderSetup({
       setConnectionField('api_key');
       return;
     }
+    if (connectionField === 'api_key') {
+      setConnectionField('proxy');
+      return;
+    }
     setError(undefined);
     if (models.length === 0) {
       startAddModel();
@@ -367,7 +408,8 @@ export function ConfiguredProviderSetup({
 
   const renderConnectionRow = (field: ConnectionField, label: string, mask = false) => {
     const active = connectionField === field;
-    const value = field === 'base_url' ? baseUrl : apiKey;
+    const value = connectionValueForField(field);
+    const setter = field === 'base_url' ? setBaseUrl : field === 'api_key' ? setApiKey : setProxy;
     return (
       <Box>
         <Text backgroundColor={active ? 'suggestion' : undefined} color={active ? 'inverseText' : undefined}>
@@ -377,7 +419,7 @@ export function ConfiguredProviderSetup({
         {active ? (
           <TextInput
             value={value}
-            onChange={field === 'base_url' ? setBaseUrl : setApiKey}
+            onChange={setter}
             onSubmit={connectionEnter}
             columns={columns}
             mask={mask ? '*' : undefined}
@@ -447,6 +489,7 @@ export function ConfiguredProviderSetup({
         <Box flexDirection="column" gap={1}>
           {renderConnectionRow('base_url', 'Base URL ')}
           {renderConnectionRow('api_key', 'API Key  ', true)}
+          {renderConnectionRow('proxy', 'Proxy    ')}
         </Box>
         {error && <Text color="error">{error}</Text>}
         <Text dimColor>

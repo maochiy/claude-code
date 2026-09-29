@@ -88,6 +88,13 @@ export const ProviderProfileSchema = lazySchema(() =>
       .describe(
         'Auth mode for openai profiles. "chatgpt" uses ChatGPT subscription OAuth',
       ),
+    proxy: z
+      .string()
+      .optional()
+      .describe(
+        'Proxy URL for this provider (e.g. http://127.0.0.1:7890, socks5://...). ' +
+          'Empty/unset means direct connection — the global system proxy fallback is ignored for this provider',
+      ),
     models: z
       .array(ConfiguredModelSchema())
       .optional()

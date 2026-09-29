@@ -387,6 +387,21 @@ function snapshotActiveProvider(settings: SettingsJson): string | undefined {
 }
 
 /**
+ * Proxy URL configured on the ACTIVE provider profile.
+ * - URL string → route this provider's requests through it.
+ * - `''` → the profile explicitly wants a direct connection (no proxy).
+ * - `undefined` → no active profile / no proxy preference (callers fall back
+ *   to the standard env/system lookup).
+ */
+export function getActiveProviderProxyUrl(): string | undefined {
+  const name = getActiveProviderProfileName()
+  if (!name) return undefined
+  const profile = getProviderProfile(name)
+  if (!profile) return undefined
+  return profile.proxy ?? ''
+}
+
+/**
  * Save (merge) a provider profile without activating it.
  */
 export function saveProviderProfile(
@@ -406,6 +421,8 @@ export type ActivateProviderOptions = {
   /** Connection config to save into the profile (overrides saved values). */
   baseUrl?: string
   apiKey?: string
+  /** Proxy URL for this provider ('' = force direct). */
+  proxy?: string
   /**
    * Auth mode for openai profiles. 'chatgpt' = ChatGPT subscription OAuth;
    * null explicitly clears a previously saved auth mode (back to API key).
@@ -454,6 +471,7 @@ export function activateProviderProfile(
   if (options.baseUrl !== undefined)
     profile.baseUrl = options.baseUrl || undefined
   if (options.apiKey !== undefined) profile.apiKey = options.apiKey || undefined
+  if (options.proxy !== undefined) profile.proxy = options.proxy || undefined
   if (options.authMode !== undefined) {
     profile.authMode = options.authMode === 'chatgpt' ? 'chatgpt' : undefined
   }

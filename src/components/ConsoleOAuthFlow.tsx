@@ -820,6 +820,7 @@ function OAuthStatusMessage({
           : isGemini
             ? (process.env.GEMINI_API_KEY ?? '')
             : (process.env.ANTHROPIC_AUTH_TOKEN ?? '');
+      const initialProxy = editingThisProvider ? (editingProfile?.proxy ?? '') : '';
 
       return (
         <ConfiguredProviderSetup
@@ -827,10 +828,11 @@ function OAuthStatusMessage({
           description={description}
           initialBaseUrl={initialBaseUrl}
           initialApiKey={initialApiKey}
+          initialProxy={initialProxy}
           initialModels={initialModels}
           initialDefaultModelId={initialDefaultModelId}
           onCancel={() => setOAuthStatus({ state: 'idle' })}
-          onSave={({ baseUrl, apiKey, models, defaultModelId }) => {
+          onSave={({ baseUrl, apiKey, proxy, models, defaultModelId }) => {
             // Save into the named provider profile and activate it. Other
             // providers' profiles (e.g. a previously configured endpoint)
             // are snapshotted and left intact — no more cross-provider clobbering.
@@ -840,6 +842,7 @@ function OAuthStatusMessage({
               type: provider as ProviderProfileType,
               baseUrl: baseUrl || '',
               apiKey: apiKey || '',
+              proxy: proxy || '',
               models: hasCatalog ? models : undefined,
               model: defaultModelId,
               clearModelCatalog: !hasCatalog,
