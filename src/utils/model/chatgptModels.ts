@@ -4,16 +4,16 @@ export type ChatGPTCodexModelOption = {
   description: string
 }
 
-/** Default ChatGPT/Codex model (newest frontier). */
-export const CHATGPT_CODEX_DEFAULT_MODEL = 'gpt-5.6-sol'
+/** Default ChatGPT/Codex model (newest flagship-per-cost). */
+export const CHATGPT_CODEX_DEFAULT_MODEL = 'gpt-6.1-sol'
 export const CHATGPT_CODEX_BALANCED_MODEL = 'gpt-5.6-terra'
 /** Fast/small default for lighter tasks. */
 export const CHATGPT_CODEX_FAST_MODEL = 'gpt-5.6-luna'
 
 export const CHATGPT_CODEX_MODELS_BY_TIER = {
-  opus: CHATGPT_CODEX_DEFAULT_MODEL,
-  sonnet: CHATGPT_CODEX_BALANCED_MODEL,
-  haiku: CHATGPT_CODEX_FAST_MODEL,
+  opus: 'gpt-6-astra',
+  sonnet: 'gpt-6.1-sol',
+  haiku: 'gpt-5.6-luna',
 } as const
 
 export type ChatGPTCodexModelTier = keyof typeof CHATGPT_CODEX_MODELS_BY_TIER
@@ -55,25 +55,36 @@ export const CHATGPT_CODEX_MAX_OUTPUT_TOKENS = 128_000
 /**
  * ChatGPT OAuth / Codex model picker options.
  *
- * Current lineup (as of Sep 2026):
- * - GPT-6 Sol / Luna: newest generation, rolling out to Codex (Plus and higher for Sol).
- * - GPT-5.6 Sol / Terra / Luna: current family (rolled out 2026-07-09).
- * - gpt-5.5: previous flagship — retires from Codex on 2026-10-14 (API still available).
+ * Current lineup (as of Sep 30, 2026):
+ * - GPT-6.1 Sol: released 2026-09-29 (DevDay) — near-Astra intelligence at
+ *   1/5 of Astra's token cost. GPT-6.1 Astra was scrapped over safety review.
+ * - GPT-6 Astra: current frontier flagship (recommended by OpenAI for Codex).
+ * - GPT-6 Sol / Luna: first GPT-6 generation.
+ * - GPT-5.6 Sol / Terra / Luna: previous family, still available.
+ * - gpt-5.5: retires from Codex on 2026-10-14 (API still available).
  * - gpt-5.3-codex-spark: research preview, ChatGPT Pro only.
- *
- * Retired from Codex (ChatGPT sign-in) and therefore NOT listed:
- * gpt-5.4 / gpt-5.4-mini (2026-08-31), gpt-5.3-codex, gpt-5.2 (deprecated).
  */
 export const CHATGPT_CODEX_MODEL_OPTIONS: ChatGPTCodexModelOption[] = [
   {
+    value: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    description:
+      'Newest release · near-Astra intelligence at 1/5 of the token cost',
+  },
+  {
+    value: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    description: 'Current frontier flagship · highest capability',
+  },
+  {
     value: 'gpt-6-sol',
     label: 'GPT-6 Sol',
-    description: 'Newest flagship for complex coding and agentic workflows',
+    description: 'Strong GPT-6 generation model for complex work',
   },
   {
     value: 'gpt-6-luna',
     label: 'GPT-6 Luna',
-    description: 'Newest fast model for focused, repeatable tasks',
+    description: 'Fast GPT-6 generation model for lighter tasks',
   },
   {
     value: 'gpt-5.6-sol',
@@ -120,10 +131,14 @@ export function isGpt56FamilyModel(model: string): boolean {
   return normalized === 'gpt-5.6' || normalized.startsWith('gpt-5.6-')
 }
 
-/** Whether this is a GPT-6 family model id (Sol/Luna or bare `gpt-6`). */
+/** Whether this is a GPT-6 family model id (Astra/Sol/Luna/6.1 variants). */
 export function isGpt6FamilyModel(model: string): boolean {
   const normalized = normalizeChatGPTModelId(model)
-  return normalized === 'gpt-6' || normalized.startsWith('gpt-6-')
+  return (
+    normalized === 'gpt-6' ||
+    normalized.startsWith('gpt-6-') ||
+    normalized.startsWith('gpt-6.')
+  )
 }
 
 export function isChatGPTCodexReasoningModel(model: string): boolean {

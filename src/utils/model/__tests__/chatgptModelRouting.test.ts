@@ -5,19 +5,19 @@ import {
 } from '../chatgptModels.js'
 
 describe('resolveChatGPTCodexModelForTier', () => {
-  test('maps CCB capability tiers to the matching GPT-5.6 models', () => {
+  test('maps CCB capability tiers to the matching Codex models', () => {
     expect(
       resolveChatGPTCodexModelForTier({
         tier: 'opus',
         isChatGPTAuth: true,
       }),
-    ).toBe('gpt-5.6-sol')
+    ).toBe('gpt-6-astra')
     expect(
       resolveChatGPTCodexModelForTier({
         tier: 'sonnet',
         isChatGPTAuth: true,
       }),
-    ).toBe('gpt-5.6-terra')
+    ).toBe('gpt-6.1-sol')
     expect(
       resolveChatGPTCodexModelForTier({
         tier: 'haiku',
@@ -28,8 +28,8 @@ describe('resolveChatGPTCodexModelForTier', () => {
 
   test('keeps the tier map as the single source of default assignments', () => {
     expect(CHATGPT_CODEX_MODELS_BY_TIER).toEqual({
-      opus: 'gpt-5.6-sol',
-      sonnet: 'gpt-5.6-terra',
+      opus: 'gpt-6-astra',
+      sonnet: 'gpt-6.1-sol',
       haiku: 'gpt-5.6-luna',
     })
   })
