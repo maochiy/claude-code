@@ -16,5 +16,6 @@ export type Continue =
   | { reason: 'max_output_tokens_escalate' }
   | { reason: 'max_output_tokens_recovery'; attempt: number }
   | { reason: 'stop_hook_blocking' }
+  | { reason: 'task_completion_check' }
   | { reason: 'token_budget_continuation' }
   | { reason: 'next_turn' }

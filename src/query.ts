@@ -28,6 +28,8 @@ import {
 import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
 import { findToolByName, type ToolUseContext } from './Tool.js'
+import { TaskCompletionTracker } from './query/taskCompletion.js'
+import { getTaskListId, isTodoV2Enabled } from './utils/tasks.js'
 import { asSystemPrompt, type SystemPrompt } from './utils/systemPromptType.js'
 import type {
   AssistantMessage,
@@ -414,6 +416,7 @@ async function* queryLoop(
     skipCacheWrite,
   } = params
   const deps = params.deps ?? productionDeps()
+  const taskCompletion = new TaskCompletionTracker()
 
   // Mutable cross-iteration state. The loop body destructures this at the top
   // of each iteration so reads stay bare-name (`messages`, `toolUseContext`).
@@ -462,6 +465,7 @@ async function* queryLoop(
     // is reassigned within an iteration (queryTracking, messages updates);
     // the rest are read-only between continue sites.
     let { toolUseContext } = state
+    const taskListIdForIteration = getTaskListId()
     const {
       messages,
       autoCompactTracking,
@@ -1554,6 +1558,30 @@ async function* queryLoop(
         }
       }
 
+      if (
+        (querySource.startsWith('repl_main_thread') || querySource === 'sdk') &&
+        !toolUseContext.agentId &&
+        !toolUseContext.abortController.signal.aborted &&
+        (!maxTurns || turnCount < maxTurns) &&
+        isTodoV2Enabled() &&
+        findToolByName(toolUseContext.options.tools, 'TaskUpdate')
+      ) {
+        const content = await taskCompletion.reminder(toolUseContext)
+        if (content && !toolUseContext.abortController.signal.aborted) {
+          const reminder = createUserMessage({ content, isMeta: true })
+          yield reminder
+          state = {
+            ...state,
+            messages: [...messagesForQuery, ...assistantMessages, reminder],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            turnCount: turnCount + 1,
+            transition: { reason: 'task_completion_check' },
+          }
+          continue
+        }
+      }
+
       const stopHookResult = yield* handleStopHooks(
         messagesForQuery,
         assistantMessages,
@@ -1695,6 +1723,7 @@ async function* queryLoop(
         }
       }
     }
+    taskCompletion.record(taskListIdForIteration, toolUseBlocks, toolResults)
     queryCheckpoint('query_tool_execution_end')
 
     // Generate tool use summary after tool batch completes — passed to next recursive call

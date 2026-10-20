@@ -4,6 +4,7 @@ import { normalizeOpenAIUsage, type AnthropicUsage } from '@ant/model-provider'
 import { getActiveProviderProxyUrl } from 'src/utils/model/providerProfiles.js'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
 import { proxiedFetch } from './proxiedFetch.js'
+import { sleep } from 'src/utils/sleep.js'
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = Record<string, unknown>
@@ -198,33 +199,111 @@ export function buildResponsesRequest(params: {
   }
 }
 
+function isResponsesTerminal(type: unknown): boolean {
+  return (
+    type === 'response.completed' ||
+    type === 'response.incomplete' ||
+    type === 'response.failed' ||
+    type === 'response.error' ||
+    type === 'error'
+  )
+}
+
+class ResponsesStreamInterruptedError extends Error {
+  readonly code = 'CHATGPT_STREAM_INTERRUPTED'
+
+  constructor() {
+    super('ChatGPT Responses stream interrupted before a terminal event')
+  }
+}
+
+const retryableStatuses = new Set([408, 429, 500, 502, 503, 504])
+const retryableNetworkCodes = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+])
+
+function transportDetails(error: unknown): {
+  code?: string
+  status?: number
+  network: boolean
+} {
+  let current = error
+  let code: string | undefined
+  let status: number | undefined
+  let network = false
+  const seen = new Set<unknown>()
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const record = current as Record<string, unknown>
+    if (typeof record.code === 'string') {
+      code ??= record.code
+      if (retryableNetworkCodes.has(record.code)) {
+        code = record.code
+        network = true
+      }
+    }
+    if (typeof record.status === 'number') status ??= record.status
+    current = record.cause
+  }
+  return { code, status, network }
+}
+
 async function* parseSSE(
   response: Response,
 ): AsyncGenerator<Record<string, unknown>, void> {
-  if (!response.body) throw new Error('ChatGPT response did not include a body')
+  if (!response.body) throw new ResponsesStreamInterruptedError()
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let splitAt = buffer.indexOf('\n\n')
-    while (splitAt >= 0) {
-      const frame = buffer.slice(0, splitAt)
-      buffer = buffer.slice(splitAt + 2)
-      const data = frame
-        .split(/\r?\n/)
-        .filter(line => line.startsWith('data:'))
-        .map(line => line.slice(5).trimStart())
-        .join('\n')
-      if (data && data !== '[DONE]') {
-        const parsed = JSON.parse(data) as unknown
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += done
+        ? decoder.decode()
+        : decoder.decode(value, { stream: true })
+      // Match CRLF only after a complete chunk has arrived; a trailing CR may
+      // belong to the next chunk's LF. Also process an unterminated EOF frame.
+      let separator: RegExpExecArray | null
+      while ((separator = /\r?\n\r?\n/.exec(buffer)) || (done && buffer)) {
+        const frame = separator ? buffer.slice(0, separator.index) : buffer
+        buffer = separator
+          ? buffer.slice(separator.index + separator[0].length)
+          : ''
+        const data = frame
+          .split(/\r?\n/)
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trimStart())
+          .join('\n')
+        if (!data || data === '[DONE]') continue
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(data) as unknown
+        } catch {
+          // SyntaxError messages can quote the payload. Do not retain them,
+          // even as a cause, since errors are exposed to users and logs.
+          throw Object.assign(new Error('ChatGPT Responses invalid SSE JSON'), {
+            code: 'CHATGPT_INVALID_SSE',
+          })
+        }
         if (parsed && typeof parsed === 'object') {
-          yield parsed as Record<string, unknown>
+          const event = parsed as Record<string, unknown>
+          yield event
+          if (isResponsesTerminal(event.type)) return
         }
       }
-      splitAt = buffer.indexOf('\n\n')
+      if (done) throw new ResponsesStreamInterruptedError()
+    }
+  } finally {
+    // Every read above has settled before reaching finally. Initiate cancel,
+    // but do not wait for an underlying source that may never finish cleanup.
+    // releaseLock is safe here and must not depend on that cleanup promise.
+    try {
+      void reader.cancel().catch(() => {})
+    } finally {
+      reader.releaseLock()
     }
   }
 }
@@ -433,15 +512,21 @@ export async function* adaptResponsesStreamToAnthropic(
       continue
     }
 
-    if (type === 'response.error') {
-      const error = event.error as Record<string, unknown> | undefined
-      throw new Error(String(error?.message ?? 'ChatGPT Responses API error'))
+    if (type === 'response.error' || type === 'error') {
+      const error = (event.error ?? event) as Record<string, unknown>
+      throw Object.assign(
+        new Error(String(error.message ?? 'ChatGPT Responses API error')),
+        { code: error.code },
+      )
     }
 
     if (type === 'response.failed') {
       const response = event.response as Record<string, unknown> | undefined
       const error = response?.error as Record<string, unknown> | undefined
-      throw new Error(String(error?.message ?? 'ChatGPT Responses API failed'))
+      throw Object.assign(
+        new Error(String(error?.message ?? 'ChatGPT Responses API failed')),
+        { code: error?.code },
+      )
     }
 
     if (type === 'response.completed' || type === 'response.incomplete') {
@@ -488,68 +573,85 @@ export async function createChatGPTResponsesStream(params: {
   if (auth.accountId) {
     headers['ChatGPT-Account-Id'] = auth.accountId
   }
-  // Honor the provider profile's proxy (or HTTPS_PROXY/system fallback).
-  // Transport: node-http-layer request with a dedicated agent per attempt
-  // (ZCode-style) — no connection pooling, so stale pooled sockets can't
-  // cause intermittent "fetch failed".
-  const proxyUrl = getActiveProviderProxyUrl()
-  const requestInit = {
-    body: JSON.stringify(params.request),
-    headers,
-    method: 'POST',
-    proxyUrl,
-    signal: params.signal,
-  }
-  // Retry the connection phase on transient network failures (proxy blips,
-  // node switches, large-body upload stalls). Only failures BEFORE a
-  // response arrives are retried — a mid-stream disconnect is not (it would
-  // replay the turn). Backoff covers ~30s so short proxy/node outages heal
-  // without surfacing an error mid-conversation.
-  const maxAttempts = 5
-  const retryDelaysMs = [1000, 2000, 4000, 8000]
-  let lastFetchError: unknown
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (params.signal?.aborted) break
-    try {
-      const response = await proxiedFetch(
-        'https://chatgpt.com/backend-api/codex/responses',
-        requestInit,
-      )
-      if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(
-          `ChatGPT Responses API request failed (${response.status})${text ? `: ${text.slice(0, 500)}` : ''}`,
+  // Preserve main's dedicated-agent proxy transport; fixtures bypass networking.
+  const proxyUrl = params.fetchOverride
+    ? undefined
+    : getActiveProviderProxyUrl()
+  const fetchFn =
+    params.fetchOverride ??
+    ((url: string, init: Parameters<typeof proxiedFetch>[1]) =>
+      proxiedFetch(url, { ...init, proxyUrl }))
+  const body = JSON.stringify(params.request)
+  return (async function* () {
+    let delivered = false
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      params.signal.throwIfAborted()
+      try {
+        const response = await fetchFn(
+          'https://chatgpt.com/backend-api/codex/responses',
+          { method: 'POST', headers, body, signal: params.signal },
         )
-      }
-      return parseSSE(response)
-    } catch (error) {
-      if (params.signal?.aborted) throw error
-      lastFetchError = error
-      // HTTP-level errors (4xx/5xx from the API) are deterministic — don't
-      // retry those, only network-level failures (fetch failed / timeouts).
-      if (
-        error instanceof Error &&
-        /request failed \(\d{3}\)/.test(error.message)
-      ) {
-        throw error
-      }
-      if (attempt < maxAttempts) {
-        await new Promise(resolve =>
-          setTimeout(resolve, retryDelaysMs[attempt - 1] ?? 8000),
+        if (!response.ok) {
+          // Do not include upstream response bodies in errors/logs.
+          void response.body?.cancel().catch(() => {})
+          throw Object.assign(
+            new Error(
+              `ChatGPT Responses API request failed (${response.status})`,
+            ),
+            { status: response.status },
+          )
+        }
+        for await (const event of parseSSE(response)) {
+          params.signal.throwIfAborted()
+          // Even metadata/tool fragments prohibit replay of this request.
+          delivered = true
+          yield event
+        }
+        return
+      } catch (error) {
+        if (params.signal.aborted) throw error
+        const details = transportDetails(error)
+        const aborted = error instanceof Error && error.name === 'AbortError'
+        const fetchNetworkError =
+          error instanceof TypeError &&
+          /fetch failed|failed to fetch|network|load failed/i.test(
+            error.message,
+          )
+        const retryable =
+          (!aborted || details.network) &&
+          (details.network ||
+            fetchNetworkError ||
+            (details.status !== undefined &&
+              retryableStatuses.has(details.status)) ||
+            error instanceof ResponsesStreamInterruptedError)
+        if (!delivered && retryable && attempt < 3) {
+          await sleep(attempt * 1000, params.signal)
+          params.signal.throwIfAborted()
+          continue
+        }
+        if (aborted && !details.network) throw error
+        const diagnostic = details.code
+          ? `code ${details.code}`
+          : details.status !== undefined
+            ? `HTTP ${details.status}`
+            : error instanceof Error
+              ? error.message
+              : 'unknown transport error'
+        const boundary = delivered
+          ? 'stream interrupted after an event; request not replayed'
+          : retryable
+            ? `retries exhausted after ${attempt} attempts`
+            : 'request failed'
+        throw Object.assign(
+          new Error(
+            !delivered && !retryable && details.status !== undefined
+              ? `ChatGPT Responses API request failed (${details.status})`
+              : `ChatGPT Responses ${boundary} (${diagnostic})`,
+            { cause: error },
+          ),
+          { code: details.code, status: details.status },
         )
       }
     }
-  }
-  // Surface the underlying cause (ETIMEDOUT / ECONNRESET / socket closed …)
-  // so "fetch failed" isn't a dead end when diagnosing proxy/network issues.
-  if (lastFetchError instanceof Error) {
-    const cause = (lastFetchError as { cause?: unknown }).cause
-    const causeDetail =
-      cause instanceof Error ? cause.message : cause ? String(cause) : undefined
-    throw new Error(
-      `ChatGPT request failed: ${lastFetchError.message}${causeDetail ? ` (${causeDetail})` : ''}`,
-      { cause: lastFetchError },
-    )
-  }
-  throw new Error('ChatGPT Responses API request failed')
+  })()
 }
