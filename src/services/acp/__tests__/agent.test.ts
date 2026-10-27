@@ -8,6 +8,9 @@ import {
   afterAll,
   spyOn,
 } from 'bun:test'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // ── Mock infrastructure ──────────────────────────────────────────
 // bun:test mock.module is process-global: it leaks to sibling test files
@@ -124,6 +127,9 @@ mockModulePreservingExports('../../../utils/listSessionsImpl.ts', {
   listSessionsImpl: mockListSessionsImpl,
 })
 
+const portableSessionStorage =
+  require('../../../utils/sessionStoragePortable.ts') as typeof import('../../../utils/sessionStoragePortable.js')
+let historyProjectDir: string | undefined
 const mockResolveSessionFilePath = mock(async () => ({
   filePath: '/fake/project/dir/session.jsonl',
   projectPath: '/tmp',
@@ -131,6 +137,8 @@ const mockResolveSessionFilePath = mock(async () => ({
 }))
 mockModulePreservingExports('../../../utils/sessionStoragePortable.js', {
   resolveSessionFilePath: mockResolveSessionFilePath,
+  getProjectDir: (cwd: string) =>
+    historyProjectDir ?? portableSessionStorage.getProjectDir(cwd),
 })
 
 const mockGetMainLoopModel = mock(() => 'claude-sonnet-4-6')
@@ -163,6 +171,7 @@ const mockSessionIdExists = mock(() => false)
 mockModulePreservingExports('../../../utils/sessionStorage.ts', {
   getLastSessionLog: mockGetLastSessionLog,
   sessionIdExists: mockSessionIdExists,
+  flushSessionStorage: mock(async () => {}),
 })
 
 const mockGetCommands = mock(async () => [
@@ -304,6 +313,9 @@ describe('AcpAgent', () => {
       expect(
         (res.agentCapabilities?._meta as any)?.claudeCode?.forkSession,
       ).toBe(true)
+      expect(
+        (res.agentCapabilities?._meta as any)?.claudeCode?.subagentHistory,
+      ).toBe(1)
     })
 
     test('advertises session/delete capability per session-delete RFD', async () => {
@@ -314,6 +326,179 @@ describe('AcpAgent', () => {
       const res = await agent.initialize({} as any)
       const caps = res.agentCapabilities?.sessionCapabilities as any
       expect(caps.delete).toEqual({})
+    })
+  })
+
+  describe('subagent history extension', () => {
+    test('scopes children by active session and persisted cwd, then reads the latest sidechain branch', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'ccx-acp-child-'))
+      const sessionId = '11111111-1111-4111-8111-111111111111'
+      const agentId = 'a1111111111111111'
+      const secondAgentId = 'a2222222222222222'
+      const parentToolUseId = 'toolu_parent'
+      const secondParentToolUseId = 'toolu_second_parent'
+      const main = join(directory, `${sessionId}.jsonl`)
+      const childrenDir = join(directory, sessionId, 'subagents')
+      const child = join(childrenDir, `agent-${agentId}.jsonl`)
+      const makeMessage = (
+        uuid: string,
+        parentUuid: string | null,
+        type: 'user' | 'assistant',
+        content: unknown,
+        timestamp: string,
+      ) => ({
+        type,
+        uuid,
+        parentUuid,
+        isSidechain: true,
+        agentId,
+        sessionId,
+        cwd: directory,
+        userType: 'external',
+        version: '2.8.22',
+        timestamp,
+        message: { role: type, content },
+      })
+      const m1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      const m2 = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+      const m3 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+      const stale = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+      try {
+        historyProjectDir = directory
+        await mkdir(childrenDir, { recursive: true })
+        await writeFile(
+          main,
+          `${JSON.stringify({ type: 'user', cwd: directory, sessionId })}\n`,
+        )
+        await writeFile(
+          join(childrenDir, `agent-${agentId}.meta.json`),
+          JSON.stringify({ parentSessionId: sessionId, parentToolUseId }),
+        )
+        await writeFile(
+          join(childrenDir, `agent-${secondAgentId}.meta.json`),
+          JSON.stringify({
+            parentSessionId: sessionId,
+            parentToolUseId: secondParentToolUseId,
+          }),
+        )
+        await writeFile(
+          join(childrenDir, `agent-${agentId}.status.json`),
+          JSON.stringify({ status: 'success' }),
+        )
+        await writeFile(
+          child,
+          [
+            makeMessage(
+              m1,
+              null,
+              'user',
+              'Inspect child',
+              '2026-01-01T00:00:01.000Z',
+            ),
+            makeMessage(
+              stale,
+              m1,
+              'assistant',
+              [{ type: 'text', text: 'stale branch' }],
+              '2026-01-01T00:00:01.500Z',
+            ),
+            makeMessage(
+              m2,
+              m1,
+              'assistant',
+              [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_child',
+                  name: 'Read',
+                  input: { file: 'a.ts', apiKey: 'hidden' },
+                },
+              ],
+              '2026-01-01T00:00:02.000Z',
+            ),
+            makeMessage(
+              m3,
+              m2,
+              'user',
+              [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'toolu_child',
+                  content: 'file text',
+                },
+              ],
+              '2026-01-01T00:00:03.000Z',
+            ),
+          ]
+            .map(message => JSON.stringify(message))
+            .join('\n') + '\n',
+        )
+        const agent = new AcpAgent(makeConn())
+        agent.sessions.set(sessionId, {
+          cwd: directory,
+          appState: { tasks: {} },
+        } as any)
+        const listed = await agent.extMethod('ccx/subagent/list', {
+          sessionId,
+          cwd: directory,
+        })
+        expect(listed.children).toEqual([
+          { agentId, parentToolUseId, status: 'success' },
+          { agentId: secondAgentId, parentToolUseId: secondParentToolUseId },
+        ])
+        const read = await agent.extMethod('ccx/subagent/read', {
+          sessionId,
+          cwd: directory,
+          agentId,
+        })
+        expect(
+          (read.messages as Array<{ id: string }>).map(message => message.id),
+        ).toEqual([m1, m2, m3])
+        expect(JSON.stringify(read.messages)).toContain('toolu_child')
+        expect(JSON.stringify(read.messages)).toContain('[redacted]')
+        expect(JSON.stringify(read.messages)).not.toContain('stale branch')
+        const after = await agent.extMethod('ccx/subagent/read', {
+          sessionId,
+          cwd: directory,
+          agentId,
+          cursor: m2,
+        })
+        expect(
+          (after.messages as Array<{ id: string }>).map(message => message.id),
+        ).toEqual([m3])
+        await expect(
+          agent.extMethod('ccx/subagent/list', {
+            sessionId,
+            cwd: '/other/workspace',
+          }),
+        ).rejects.toThrow('not active')
+        await expect(
+          agent.extMethod('ccx/subagent/read', {
+            sessionId,
+            cwd: directory,
+            agentId: 'a3333333333333333',
+          }),
+        ).rejects.toThrow('Subagent not found')
+        await rm(main)
+        const fresh = await agent.extMethod('ccx/subagent/list', {
+          sessionId,
+          cwd: directory,
+        })
+        expect(fresh.children).toEqual([
+          { agentId, parentToolUseId, status: 'success' },
+          { agentId: secondAgentId, parentToolUseId: secondParentToolUseId },
+        ])
+        await writeFile(
+          main,
+          `${JSON.stringify({ type: 'user', cwd: '/other/workspace', sessionId })}\n`,
+        )
+        await expect(
+          agent.extMethod('ccx/subagent/list', { sessionId, cwd: directory }),
+        ).rejects.toThrow('cwd mismatch')
+      } finally {
+        historyProjectDir = undefined
+        await rm(directory, { recursive: true, force: true })
+      }
     })
   })
 

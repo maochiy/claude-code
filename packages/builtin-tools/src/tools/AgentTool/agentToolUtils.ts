@@ -526,6 +526,7 @@ export async function runAsyncAgentLifecycle({
   toolUseContext,
   rootSetAppState,
   agentIdForCleanup,
+  writeHistoryStatus,
   enableSummarization,
   getWorktreeResult,
 }: {
@@ -539,6 +540,9 @@ export async function runAsyncAgentLifecycle({
   toolUseContext: ToolUseContext
   rootSetAppState: SetAppState
   agentIdForCleanup: string
+  writeHistoryStatus: (
+    status: 'success' | 'failed' | 'cancelled',
+  ) => Promise<void>
   enableSummarization: boolean
   getWorktreeResult: () => Promise<{
     worktreePath?: string
@@ -613,6 +617,9 @@ export async function runAsyncAgentLifecycle({
     // (git exec) are notification embellishments that can hang — they must
     // not gate the status transition (gh-20236).
     completeAsyncAgent(agentResult, rootSetAppState)
+    await writeHistoryStatus('success').catch(_err =>
+      logForDebugging(`Failed to write agent history status: ${_err}`),
+    )
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 
@@ -655,6 +662,9 @@ export async function runAsyncAgentLifecycle({
       // must fire unconditionally. Transition status BEFORE worktree cleanup
       // so TaskOutput unblocks even if git hangs (gh-20236).
       killAsyncAgent(taskId, rootSetAppState)
+      await writeHistoryStatus('cancelled').catch(_err =>
+        logForDebugging(`Failed to write agent history status: ${_err}`),
+      )
       logEvent('tengu_agent_tool_terminated', {
         agent_type:
           metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -681,6 +691,9 @@ export async function runAsyncAgentLifecycle({
     }
     const msg = errorMessage(error)
     failAsyncAgent(taskId, msg, rootSetAppState)
+    await writeHistoryStatus('failed').catch(_err =>
+      logForDebugging(`Failed to write agent history status: ${_err}`),
+    )
     const worktreeResult = await getWorktreeResult()
     enqueueAgentNotification({
       taskId,

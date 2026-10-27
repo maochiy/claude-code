@@ -20,8 +20,10 @@ import {
 import { getAgentModel } from 'src/utils/model/agent.js'
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js'
 import {
+  getAgentHistoryStatusPath,
   getAgentTranscript,
   readAgentMetadata,
+  writeAgentHistoryStatus,
 } from 'src/utils/sessionStorage.js'
 import { buildEffectiveSystemPrompt } from 'src/utils/systemPrompt.js'
 import type { SystemPrompt } from 'src/utils/systemPromptType.js'
@@ -192,9 +194,15 @@ export async function resumeAgentBackground({
     // Re-persist so metadata survives runAgent's writeAgentMetadata overwrite
     worktreePath: resumedWorktreePath,
     description: meta?.description,
+    parentSessionId: meta?.parentSessionId,
+    parentToolUseId: meta?.parentToolUseId,
     contentReplacementState: resumedReplacementState,
   }
 
+  const historyStatusPath = getAgentHistoryStatusPath(asAgentId(agentId))
+  await writeAgentHistoryStatus(historyStatusPath, 'running').catch(_err =>
+    logForDebugging(`Failed to write agent history status: ${_err}`),
+  )
   // Skip name-registry write — original entry persists from the initial spawn
   const agentBackgroundTask = registerAsyncAgent({
     agentId,
@@ -248,6 +256,8 @@ export async function resumeAgentBackground({
         toolUseContext,
         rootSetAppState,
         agentIdForCleanup: agentId,
+        writeHistoryStatus: status =>
+          writeAgentHistoryStatus(historyStatusPath, status),
         enableSummarization:
           isCoordinatorMode() ||
           isForkSubagentEnabled() ||

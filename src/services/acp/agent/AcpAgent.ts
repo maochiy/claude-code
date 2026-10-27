@@ -55,6 +55,7 @@ import {
 } from '../../../utils/sessionStoragePortable.js'
 import { getOriginalCwd } from '../../../bootstrap/state.js'
 import type { AcpSession } from './sessionTypes.js'
+import { listSubagentHistory, readSubagentHistory } from './subagentHistory.js'
 
 // ── Agent class ───────────────────────────────────────────────────
 //
@@ -113,6 +114,7 @@ export class AcpAgent implements Agent {
             // Advertise via _meta namespace per extensibility.mdx "Advertising
             // Custom Capabilities" instead of the standard sessionCapabilities map.
             forkSession: true,
+            subagentHistory: 1,
           },
         },
         // image:false — promptToQueryInput() does not parse ContentBlock::Image
@@ -299,6 +301,12 @@ export class AcpAgent implements Agent {
   ): Promise<Record<string, unknown>> {
     // SDK 0.19.0 routes unknown methods here (acp.js:139 default branch).
     // We surface UNSTABLE capabilities that the SDK hasn't typed yet.
+    if (method === 'ccx/subagent/list') {
+      return listSubagentHistory(this.sessions, params)
+    }
+    if (method === 'ccx/subagent/read') {
+      return readSubagentHistory(this.sessions, params)
+    }
     if (method === 'session/delete') {
       const sessionId = params.sessionId
       if (typeof sessionId !== 'string' || sessionId.length === 0) {

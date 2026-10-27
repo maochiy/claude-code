@@ -4,7 +4,7 @@ import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js';
 import type { AssistantMessage, Message as MessageType, NormalizedUserMessage } from 'src/types/message.js';
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
 import { z } from 'zod/v4';
-import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from 'src/bootstrap/state.js';
+import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled, getSessionId } from 'src/bootstrap/state.js';
 import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from 'src/constants/prompts.js';
 import { isCoordinatorMode } from 'src/coordinator/coordinatorMode.js';
 import { startAgentSummarization } from 'src/services/AgentSummary/agentSummary.js';
@@ -54,7 +54,7 @@ import { permissionModeSchema } from 'src/utils/permissions/PermissionMode.js';
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js';
 import { filterDeniedAgents, getDenyRuleForAgent } from 'src/utils/permissions/permissions.js';
 import { enqueueSdkEvent } from 'src/utils/sdkEventQueue.js';
-import { writeAgentMetadata } from 'src/utils/sessionStorage.js';
+import { getAgentHistoryStatusPath, writeAgentHistoryStatus, writeAgentMetadata } from 'src/utils/sessionStorage.js';
 import { sleep } from 'src/utils/sleep.js';
 import { buildEffectiveSystemPrompt } from 'src/utils/systemPrompt.js';
 import { asSystemPrompt } from 'src/utils/systemPromptType.js';
@@ -727,6 +727,20 @@ export const AgentTool = buildTool({
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
+    // ACP history is bound to the parent session and tool call at spawn time.
+    // Persist this before execution so clients can discover the child reliably.
+    const parentSessionId = getSessionId();
+    const parentToolUseId = toolUseContext.toolUseId;
+    const historyOwner = parentToolUseId ? { parentSessionId, parentToolUseId } : {};
+    const historyStatusPath = getAgentHistoryStatusPath(asAgentId(earlyAgentId));
+    await writeAgentHistoryStatus(historyStatusPath, 'running').catch(_err =>
+      logForDebugging(`Failed to write agent history status: ${_err}`),
+    );
+    await writeAgentMetadata(asAgentId(earlyAgentId), {
+      agentType: selectedAgent.agentType,
+      description,
+      ...historyOwner,
+    }).catch(_err => logForDebugging(`Failed to write agent history owner: ${_err}`));
 
     // Set up worktree isolation if requested
     let worktreeInfo: {
@@ -786,6 +800,7 @@ export const AgentTool = buildTool({
       ...(isForkPath && { useExactTools: true }),
       worktreePath: worktreeInfo?.worktreePath,
       description,
+      ...historyOwner,
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)
@@ -818,6 +833,7 @@ export const AgentTool = buildTool({
           void writeAgentMetadata(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
             description,
+            ...historyOwner,
           }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
           return {};
         }
@@ -890,6 +906,7 @@ export const AgentTool = buildTool({
             toolUseContext,
             rootSetAppState,
             agentIdForCleanup: asyncAgentId,
+            writeHistoryStatus: status => writeAgentHistoryStatus(historyStatusPath, status),
             enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
           }),
@@ -1128,6 +1145,9 @@ export const AgentTool = buildTool({
                       // cleanupWorktreeIfNeeded can hang — they must not gate
                       // the status transition (gh-20236).
                       completeAsyncAgent(agentResult, rootSetAppState);
+                      await writeAgentHistoryStatus(historyStatusPath, 'success').catch(_err =>
+                        logForDebugging(`Failed to write agent history status: ${_err}`),
+                      );
 
                       // Extract text from agent result content for the notification
                       let finalMessage = extractTextContent(agentResult.content, '\n');
@@ -1169,6 +1189,9 @@ export const AgentTool = buildTool({
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
                         killAsyncAgent(backgroundedTaskId, rootSetAppState);
+                        await writeAgentHistoryStatus(historyStatusPath, 'cancelled').catch(_err =>
+                          logForDebugging(`Failed to write agent history status: ${_err}`),
+                        );
                         logEvent('tengu_agent_tool_terminated', {
                           agent_type: metadata.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                           model:
@@ -1194,6 +1217,9 @@ export const AgentTool = buildTool({
                       }
                       const errMsg = errorMessage(error);
                       failAsyncAgent(backgroundedTaskId, errMsg, rootSetAppState);
+                      await writeAgentHistoryStatus(historyStatusPath, 'failed').catch(_err =>
+                        logForDebugging(`Failed to write agent history status: ${_err}`),
+                      );
                       const worktreeResult = await cleanupWorktreeIfNeeded();
                       enqueueAgentNotification({
                         taskId: backgroundedTaskId,
@@ -1391,6 +1417,11 @@ export const AgentTool = buildTool({
             // Skip if backgrounded — the background continuation is still running in it
             if (!wasBackgrounded) {
               worktreeResult = await cleanupWorktreeIfNeeded();
+              if (wasAborted || syncAgentError) {
+                await writeAgentHistoryStatus(historyStatusPath, wasAborted ? 'cancelled' : 'failed').catch(_err =>
+                  logForDebugging(`Failed to write agent history status: ${_err}`),
+                );
+              }
             }
           }
 
@@ -1406,6 +1437,9 @@ export const AgentTool = buildTool({
               is_built_in_agent: metadata.isBuiltInAgent,
               reason: 'user_cancel_sync' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
             });
+            await writeAgentHistoryStatus(historyStatusPath, 'cancelled').catch(_err =>
+              logForDebugging(`Failed to write agent history status: ${_err}`),
+            );
             throw new AbortError();
           }
 
@@ -1420,6 +1454,10 @@ export const AgentTool = buildTool({
               // No messages collected, re-throw the error
               throw syncAgentError;
             }
+
+            await writeAgentHistoryStatus(historyStatusPath, 'cancelled').catch(_err =>
+              logForDebugging(`Failed to write agent history status: ${_err}`),
+            );
 
             // We have some messages, try to finalize and return them
             // This allows the parent agent to see partial progress even after an error
@@ -1443,6 +1481,11 @@ export const AgentTool = buildTool({
             }
           }
 
+          if (!syncAgentError) {
+            await writeAgentHistoryStatus(historyStatusPath, 'success').catch(_err =>
+              logForDebugging(`Failed to write agent history status: ${_err}`),
+            );
+          }
           return {
             data: {
               status: 'completed' as const,

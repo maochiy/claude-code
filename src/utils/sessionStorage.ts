@@ -262,6 +262,21 @@ function getAgentMetadataPath(agentId: AgentId): string {
   return getAgentTranscriptPath(agentId).replace(/\.jsonl$/, '.meta.json')
 }
 
+export type AgentHistoryStatus = 'running' | 'success' | 'failed' | 'cancelled'
+
+/** Separate sidecar avoids runAgent metadata and worktree cleanup overwrites. */
+export function getAgentHistoryStatusPath(agentId: AgentId): string {
+  return getAgentTranscriptPath(agentId).replace(/\.jsonl$/, '.status.json')
+}
+
+export async function writeAgentHistoryStatus(
+  path: string,
+  status: AgentHistoryStatus,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, JSON.stringify({ status }))
+}
+
 export type AgentMetadata = {
   agentType: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */
@@ -270,6 +285,9 @@ export type AgentMetadata = {
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+  /** ACP child history owner. Persisted at AgentTool ID allocation. */
+  parentSessionId?: string
+  parentToolUseId?: string
 }
 
 /**
