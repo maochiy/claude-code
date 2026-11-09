@@ -256,6 +256,50 @@ function convertInternalAssistantMessage(
 }
 
 /**
+ * 剥离图片后注入的占位文本，让模型知道用户发送过图片。
+ */
+export const IMAGE_OMITTED_PLACEHOLDER = '[图片已省略：当前模型不支持视觉输入]'
+
+/**
+ * 检测 OpenAI 消息中是否包含 image_url 内容（图片只会出现在 user 消息里，
+ * tool_result 中的图片在转换时已被挪到紧随其后的 user 消息）。
+ */
+export function openAIMessagesContainImage(
+  messages: ChatCompletionMessageParam[],
+): boolean {
+  return messages.some(m => {
+    if (m.role !== 'user' || typeof m.content === 'string') return false
+    return m.content.some(part => part.type === 'image_url')
+  })
+}
+
+/**
+ * 剥离 user 消息中的 image_url 内容，剩余文本与占位符合并为纯文本 content。
+ *
+ * 用于兼容不支持视觉输入的 OpenAI 端点：部分网关（如 one-api 系）对纯文本
+ * 模型收到带图请求时直接返回 400，调用方可借此降级为无图会话重试。
+ */
+export function stripImagePartsFromOpenAIMessages(
+  messages: ChatCompletionMessageParam[],
+  placeholder: string = IMAGE_OMITTED_PLACEHOLDER,
+): ChatCompletionMessageParam[] {
+  return messages.map(m => {
+    if (m.role !== 'user' || typeof m.content === 'string') return m
+    if (!m.content.some(part => part.type === 'image_url')) return m
+    const textParts = m.content
+      .filter(
+        (part): part is Extract<typeof part, { type: 'text' }> =>
+          part.type === 'text',
+      )
+      .map(part => part.text)
+    return {
+      ...m,
+      content: [...textParts, placeholder].join('\n\n'),
+    } satisfies ChatCompletionUserMessageParam
+  })
+}
+
+/**
  * 将 Anthropic image 块转换为 OpenAI image_url 格式。
  *
  * Anthropic 格式: { type: "image", source: { type: "base64", media_type: "image/png", data: "..." } }

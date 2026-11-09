@@ -18,6 +18,7 @@ import { getOpenAIClient } from './client.js'
 import {
   formatOpenAIPromptCacheKey,
   getOfficialOpenAIPromptCacheKey,
+  is400BadRequest,
   updateOpenAIUsage,
 } from './openaiShared.js'
 import {
@@ -25,6 +26,8 @@ import {
   adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
+  openAIMessagesContainImage,
+  stripImagePartsFromOpenAIMessages,
 } from '@ant/model-provider'
 import { resolveProviderModelId } from '../../../utils/model/providerModel.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
@@ -32,6 +35,9 @@ import {
   adaptResponsesStreamToAnthropic,
   buildResponsesRequest,
   createChatGPTResponsesStream,
+  createGatewayResponsesStream,
+  getConfiguredResponsesRoute,
+  resolveConfiguredResponsesModel,
   type ResponsesReasoningEffort,
 } from './responsesAdapter.js'
 import { normalizeMessagesForAPI } from '../../../utils/messages.js'
@@ -111,10 +117,11 @@ function getChatGPTResponsesReasoningEffort(
 function getOpenAIChatReasoningEffort(
   model: string,
   effortValue: Options['effortValue'],
+  apiProvider?: Options['apiProvider'],
 ): OpenAIChatReasoningEffort | undefined {
-  if (!modelSupportsEffort(model)) return undefined
+  if (!modelSupportsEffort(model, apiProvider)) return undefined
   return normalizeOpenAIChatReasoningEffort(
-    resolveAppliedEffort(model, effortValue),
+    resolveAppliedEffort(model, effortValue, apiProvider),
   )
 }
 
@@ -243,9 +250,15 @@ export async function* queryModelOpenAI(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // 降级重试的提示信息：在 try 内赋值，catch 中需要读取，故声明在 try 外。
+  let imageRetryHint = ''
   try {
     // 1. Resolve model name
-    const openaiModel = resolveProviderModelId(options.model, 'openai')
+    const responsesRoute = getConfiguredResponsesRoute(options.model)
+    // 原生子 Agent 的精确模型路由优先于全局 OPENAI_MODEL，避免被父模型覆盖。
+    const openaiModel = resolveConfiguredResponsesModel(options.model, model =>
+      resolveProviderModelId(model, 'openai'),
+    )
 
     // 2. Normalize messages using shared preprocessing
     const messagesForAPI = normalizeMessagesForAPI(messages, tools)
@@ -293,6 +306,7 @@ export async function* queryModelOpenAI(
           agents: options.agents,
           allowedAgentTypes: options.allowedAgentTypes,
           model: options.model,
+          apiProvider: options.apiProvider,
           deferLoading: useSearchExtraTools && deferredToolNames.has(tool.name),
         }),
       ),
@@ -332,6 +346,7 @@ export async function* queryModelOpenAI(
     const chatReasoningEffort = getOpenAIChatReasoningEffort(
       openaiModel,
       options.effortValue,
+      options.apiProvider,
     )
 
     // 9. Log tool filtering details
@@ -371,7 +386,9 @@ export async function* queryModelOpenAI(
       options.maxOutputTokensOverride,
     )
 
-    const useChatGPTResponses = isChatGPTAuthEnabled()
+    const useChatGPTResponses = responsesRoute
+      ? responsesRoute.transport === 'chatgpt'
+      : isChatGPTAuthEnabled()
     // OpenAI's official OAuth and API-key routes share the same prompt-cache
     // contract. Scope the key to the real conversation so resumed turns stay
     // sticky while unrelated sessions do not share a routing bucket. Generic
@@ -383,51 +400,100 @@ export async function* queryModelOpenAI(
       : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
     const useOfficialOpenAICache = promptCacheKey !== undefined
 
+    // 某些 OpenAI 兼容网关（one-api/new-api 系）对纯文本模型收到带图请求时
+    // 直接 400（"The item of `content` should be a message of a certain modal"）。
+    // 此时剥离图片降级重试一次，把硬失败变成无图会话，而不是整轮请求报废。
+    const requestHasImages = openAIMessagesContainImage(openaiMessages)
+    let requestMessages = openaiMessages
+    let imagesStripped = false
+
+    const createChatCompletion = async () => {
+      const client = getOpenAIClient({
+        maxRetries: 0,
+        fetchOverride: options.fetchOverride as unknown as typeof fetch,
+        source: options.querySource,
+      })
+      const create = (messages: typeof openaiMessages) =>
+        client.chat.completions.create(
+          buildOpenAIRequestBody({
+            model: openaiModel,
+            messages,
+            tools: openaiTools,
+            toolChoice: openaiToolChoice,
+            enableThinking,
+            reasoningEffort: chatReasoningEffort,
+            maxTokens,
+            temperatureOverride: options.temperatureOverride,
+            promptCacheKey,
+          }),
+          { signal },
+        )
+      try {
+        return await create(requestMessages)
+      } catch (error) {
+        if (requestHasImages && !imagesStripped && is400BadRequest(error)) {
+          logForDebugging(
+            '[OpenAI] 400 with image content — retrying without images',
+            { level: 'warn' },
+          )
+          requestMessages = stripImagePartsFromOpenAIMessages(openaiMessages)
+          imagesStripped = true
+          try {
+            return await create(requestMessages)
+          } catch (retryError) {
+            imageRetryHint =
+              '\n\n（注：请求包含图片，已尝试剥离图片后重试仍失败——当前模型或端点可能不支持视觉输入）'
+            throw retryError
+          }
+        }
+        throw error
+      }
+    }
+
     logForDebugging(
       `[OpenAI] Calling model=${openaiModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}${promptCacheKey ? `, prompt_cache_key=${promptCacheKey}` : ''}`,
     )
 
-    // 11. Call OpenAI API with streaming. ChatGPT subscription auth uses the
-    // Codex Responses backend; API-key/OpenAI-compatible auth keeps the
-    // existing Chat Completions adapter.
-    const adaptedStream = useChatGPTResponses
-      ? adaptResponsesStreamToAnthropic(
-          await createChatGPTResponsesStream({
-            request: buildResponsesRequest({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              reasoningEffort,
-              promptCacheKey: sessionPromptCacheKey,
-            }),
-            signal,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-          }),
-          openaiModel,
-        )
-      : adaptOpenAIStreamToAnthropic(
-          await getOpenAIClient({
-            maxRetries: 0,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-            source: options.querySource,
-          }).chat.completions.create(
-            buildOpenAIRequestBody({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              enableThinking,
-              reasoningEffort: chatReasoningEffort,
-              maxTokens,
-              temperatureOverride: options.temperatureOverride,
-              promptCacheKey,
-            }),
-            { signal },
-          ),
-          openaiModel,
-          { includeCacheWriteTokens: useOfficialOpenAICache },
-        )
+    // 11. 精确模型路由选择 Responses 凭据；未命中时保留既有认证模式。
+    // Gateway 只接收其专用 Bearer，绝不读取或转发 ChatGPT OAuth。
+    const adaptedStream =
+      responsesRoute?.transport === 'gateway' || useChatGPTResponses
+        ? adaptResponsesStreamToAnthropic(
+            await (responsesRoute?.transport === 'gateway'
+              ? createGatewayResponsesStream({
+                  route: responsesRoute,
+                  request: buildResponsesRequest({
+                    model: openaiModel,
+                    messages: openaiMessages,
+                    tools: openaiTools,
+                    toolChoice: openaiToolChoice,
+                    reasoningEffort,
+                    promptCacheKey: sessionPromptCacheKey,
+                  }),
+                  signal,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                })
+              : createChatGPTResponsesStream({
+                  request: buildResponsesRequest({
+                    model: openaiModel,
+                    messages: openaiMessages,
+                    tools: openaiTools,
+                    toolChoice: openaiToolChoice,
+                    reasoningEffort,
+                    promptCacheKey: sessionPromptCacheKey,
+                  }),
+                  signal,
+                  fetchOverride:
+                    options.fetchOverride as unknown as typeof fetch,
+                })),
+            openaiModel,
+          )
+        : adaptOpenAIStreamToAnthropic(
+            await createChatCompletion(),
+            openaiModel,
+            { includeCacheWriteTokens: useOfficialOpenAICache },
+          )
 
     // 12. Convert OpenAI stream to Anthropic events, then process into
     //     AssistantMessage + StreamEvent (matching the Anthropic path behavior)
@@ -559,7 +625,7 @@ export async function* queryModelOpenAI(
     recordLLMObservation(options.langfuseTrace ?? null, {
       model: openaiModel,
       provider: 'openai',
-      input: convertMessagesToLangfuse(openaiMessages),
+      input: convertMessagesToLangfuse(requestMessages),
       output: convertOutputToLangfuse(collectedMessages),
       usage: {
         input_tokens: usage.input_tokens,
@@ -592,7 +658,7 @@ export async function* queryModelOpenAI(
     const errorMessage = error instanceof Error ? error.message : String(error)
     logForDebugging(`[OpenAI] Error: ${errorMessage}`, { level: 'error' })
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${errorMessage}`,
+      content: `API Error: ${errorMessage}${imageRetryHint}`,
       apiError: 'api_error',
       error: (error instanceof Error
         ? error
