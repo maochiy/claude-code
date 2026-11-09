@@ -16,7 +16,7 @@ import * as dom from './dom.js';
 import { KeyboardEvent } from './events/keyboard-event.js';
 import { FocusManager } from './focus.js';
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js';
-import { dispatchClick, dispatchHover } from './hit-test.js';
+import { dispatchClick, dispatchHover, dispatchMouseAction } from './hit-test.js';
 import instances from './instances.js';
 import { LogUpdate } from './log-update.js';
 import { nodeCache } from './node-cache.js';
@@ -211,7 +211,7 @@ export default class Ink {
   private altScreenMouseTracking = false;
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
-  // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
+  // replaced it with blanks, or repaint() reset it to 0×0. Forces
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false;
@@ -454,7 +454,7 @@ export default class Ink {
       // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
       DISABLE_KITTY_KEYBOARD +
         DISABLE_MODIFY_OTHER_KEYS +
-        (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + // disable mouse (no-op if off)
+        DISABLE_MOUSE_TRACKING + // editors own mouse tracking during handoff
         (this.altScreenActive ? '' : '\x1b[?1049h') + // enter alt (already in alt if fullscreen)
         '\x1b[?1004l' + // disable focus reporting
         '\x1b[0m' + // reset attributes
@@ -481,7 +481,9 @@ export default class Ink {
       (this.altScreenActive ? ENTER_ALT_SCREEN : '') + // re-enter alt — vim's rmcup dropped us to main
         '\x1b[2J' + // clear screen (now alt if fullscreen)
         '\x1b[H' + // cursor home
-        (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') + // re-enable mouse (skip if CLAUDE_CODE_DISABLE_MOUSE)
+        (this.altScreenMouseTracking || (!this.altScreenActive && process.env.CLAUDE_CODE_DISABLE_MOUSE !== '1')
+          ? ENABLE_MOUSE_TRACKING
+          : '') + // restore mouse in either screen
         (this.altScreenActive ? '' : '\x1b[?1049l') + // exit alt (non-fullscreen only)
         '\x1b[?25l', // hide cursor (Ink manages)
     );
@@ -624,11 +626,9 @@ export default class Ink {
     // the frame-after-selection-clears case.
     let selActive = false;
     let hlActive = false;
+    selActive = hasSelection(this.selection);
+    if (selActive) applySelectionOverlay(frame.screen, this.selection, this.stylePool);
     if (this.altScreenActive) {
-      selActive = hasSelection(this.selection);
-      if (selActive) {
-        applySelectionOverlay(frame.screen, this.selection, this.stylePool);
-      }
       // Scan-highlight: inverse on ALL visible matches (less/vim style).
       // Position-highlight (below) overlays CURRENT (yellow) on top.
       hlActive = applySearchHighlight(frame.screen, this.searchHighlightQuery, this.stylePool);
@@ -906,6 +906,8 @@ export default class Ink {
       this.hyperlinkPool,
     );
     this.log.reset();
+    // Empty frame buffers cannot supply pixels for unchanged-node blits.
+    this.prevFrameContaminated = true;
     // Physical cursor position is unknown after external terminal corruption.
     // Clear displayCursor so the cursor preamble doesn't emit a stale
     // relative move from where we last parked it.
@@ -927,10 +929,6 @@ export default class Ink {
       this.resetFramesForAltScreen();
     } else {
       this.repaint();
-      // repaint() resets frontFrame to 0×0. Without this flag the next
-      // frame's blit optimization copies from that empty screen and the
-      // diff sees no content. onRender resets the flag at frame end.
-      this.prevFrameContaminated = true;
     }
     this.onRender();
   }
@@ -964,6 +962,18 @@ export default class Ink {
       this.resetFramesForAltScreen();
     } else {
       this.repaint();
+      // AlternateScreen's cleanup writes DISABLE after this method returns.
+      queueMicrotask(() => {
+        if (
+          !this.isUnmounted &&
+          !this.isPaused &&
+          !this.altScreenActive &&
+          this.options.stdout.isTTY &&
+          process.env.CLAUDE_CODE_DISABLE_MOUSE !== '1'
+        ) {
+          this.options.stdout.write(ENABLE_MOUSE_TRACKING);
+        }
+      });
     }
   }
 
@@ -1005,7 +1015,10 @@ export default class Ink {
     if (supportsExtendedKeys()) {
       this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS);
     }
-    if (!this.altScreenActive) return;
+    if (!this.altScreenActive) {
+      if (process.env.CLAUDE_CODE_DISABLE_MOUSE !== '1') this.options.stdout.write(ENABLE_MOUSE_TRACKING);
+      return;
+    }
     // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
     if (this.altScreenMouseTracking) {
       this.options.stdout.write(ENABLE_MOUSE_TRACKING);
@@ -1344,7 +1357,20 @@ export default class Ink {
     return () => this.selectionListeners.delete(cb);
   }
 
+  private selectionWasDragging = false;
+
   private notifySelectionChange(): void {
+    // Fullscreen's ScrollKeybindingHandler owns copy-on-select; the normal
+    // REPL has no such handler, so preserve message copying here.
+    if (
+      !this.altScreenActive &&
+      this.selectionWasDragging &&
+      !this.selection.isDragging &&
+      hasSelection(this.selection)
+    ) {
+      this.copySelectionNoClear();
+    }
+    this.selectionWasDragging = this.selection.isDragging;
     this.onRender();
     for (const cb of this.selectionListeners) cb();
   }
@@ -1352,12 +1378,37 @@ export default class Ink {
   /**
    * Hit-test the rendered DOM tree at (col, row) and bubble a ClickEvent
    * from the deepest hit node up through ancestors with onClick handlers.
-   * Returns true if a DOM handler consumed the click. Gated on
-   * altScreenActive — clicks only make sense with a fixed viewport where
-   * nodeCache rects map 1:1 to terminal cells (no scrollback offset).
+   * Returns true if a DOM handler consumed the click. App calibrates
+   * main-screen terminal rows into frame coordinates before calling this.
    */
+  private mouseCapture: dom.DOMElement | null = null;
+
+  getMouseCursorRow(): number | null {
+    if (this.altScreenActive) return null;
+    return this.displayCursor?.y ?? this.frontFrame.cursor.y;
+  }
+
+  dispatchMouseAction(col: number, row: number, type: 'mousedown' | 'mousedrag' | 'mouseup'): boolean {
+    const captured = this.mouseCapture;
+    // A removed input must not receive a late release.
+    if (captured && !captured.parentNode) {
+      this.mouseCapture = null;
+      return true;
+    }
+    const target = dispatchMouseAction(this.rootNode, col, row, 0, type, captured ?? undefined);
+    if (type === 'mousedown') {
+      this.mouseCapture = target;
+      if (target) {
+        clearSelection(this.selection);
+        this.notifySelectionChange();
+      }
+    } else if (type === 'mouseup') {
+      this.mouseCapture = null;
+    }
+    return target !== null;
+  }
+
   dispatchClick(col: number, row: number): boolean {
-    if (!this.altScreenActive) return false;
     const blank = isEmptyCellAt(this.frontFrame.screen, col, row);
     return dispatchClick(this.rootNode, col, row, blank);
   }
@@ -1427,7 +1478,6 @@ export default class Ink {
    * char-mode startSelection if the click lands on a noSelect cell.
    */
   handleMultiClick(col: number, row: number, count: 2 | 3): void {
-    if (!this.altScreenActive) return;
     const screen = this.frontFrame.screen;
     // selectWordAt/selectLineAt no-op on noSelect/out-of-bounds. Seed with
     // a char-mode selection so the press still starts a drag even if the
@@ -1448,7 +1498,6 @@ export default class Ink {
    * altScreenActive for the same reason as dispatchClick.
    */
   handleSelectionDrag(col: number, row: number): void {
-    if (!this.altScreenActive) return;
     const sel = this.selection;
     if (sel.anchorSpan) {
       extendSelection(sel, this.frontFrame.screen, col, row);
@@ -1559,6 +1608,8 @@ export default class Ink {
         selection={this.selection}
         onSelectionChange={this.notifySelectionChange}
         onClickAt={this.dispatchClick}
+        onMouseAction={this.dispatchMouseAction}
+        getMouseCursorRow={this.getMouseCursorRow}
         onHoverAt={this.dispatchHover}
         getHyperlinkAt={this.getHyperlinkAt}
         onOpenHyperlink={this.openHyperlink}

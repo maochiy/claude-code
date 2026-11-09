@@ -144,6 +144,38 @@ export class Cursor {
     return new Cursor(new MeasuredText(text, columns - 1), offset, selection)
   }
 
+  /** selection is the signed UTF-16 distance from the caret to its anchor. */
+  get selectionRange(): { start: number; end: number } | null {
+    const anchor = Math.max(
+      0,
+      Math.min(this.text.length, this.offset + this.selection),
+    )
+    return anchor === this.offset
+      ? null
+      : {
+          start: Math.min(anchor, this.offset),
+          end: Math.max(anchor, this.offset),
+        }
+  }
+
+  deleteSelection(): Cursor {
+    const range = this.selectionRange
+    if (!range) return this
+    const start = this.snapOutOfImageRef(
+      this.measuredText.snapToGraphemeBoundary(range.start),
+      'start',
+    )
+    const end = this.snapOutOfImageRef(
+      this.measuredText.snapToGraphemeBoundary(range.end) === range.end
+        ? range.end
+        : this.measuredText.nextOffset(range.end),
+      'end',
+    )
+    return new Cursor(this.measuredText, start).modifyText(
+      new Cursor(this.measuredText, end),
+    )
+  }
+
   getViewportStartLine(maxVisibleLines?: number): number {
     if (maxVisibleLines === undefined || maxVisibleLines <= 0) return 0
     const { line } = this.getPosition()
@@ -181,6 +213,7 @@ export class Cursor {
     invert: (text: string) => string,
     ghostText?: { text: string; dim: (text: string) => string },
     maxVisibleLines?: number,
+    highlightSelection: (text: string) => string = invert,
   ) {
     const { line, column } = this.getPosition()
     const allLines = this.measuredText.getWrappedText()
@@ -212,6 +245,39 @@ export class Cursor {
             // where the pasted OAuth code wraps across multiple lines.
             displayText = mask.repeat(graphemes.length)
           }
+        }
+        const range = this.selectionRange
+        if (range) {
+          // Style graphemes before adding ANSI escapes. Offsets always refer to
+          // the original text, including soft wraps and masked characters.
+          const lineStart =
+            this.measuredText.getWrappedLines()[currentLine]!.startOffset
+          const source = Array.from(getGraphemeSegmenter().segment(text))
+          let displayColumn = 0
+          const rendered = Array.from(
+            getGraphemeSegmenter().segment(displayText),
+            ({ segment }, index) => {
+              const sourceOffset =
+                lineStart + (source[index]?.index ?? text.length)
+              const selected =
+                sourceOffset < range.end &&
+                sourceOffset + (source[index]?.segment.length ?? 0) >
+                  range.start
+              const atCaret = currentLine === line && displayColumn === column
+              displayColumn += stringWidth(segment)
+              return selected
+                ? highlightSelection(segment)
+                : atCaret && cursorChar
+                  ? invert(segment)
+                  : segment
+            },
+          ).join('')
+          return (
+            rendered +
+            (currentLine === line && column >= displayColumn && cursorChar
+              ? invert(cursorChar)
+              : '')
+          )
         }
         // looking for the line with the cursor
         if (line !== currentLine) return displayText.trimEnd()
@@ -834,11 +900,13 @@ export class Cursor {
   }
 
   insert(insertString: string): Cursor {
+    if (this.selectionRange) return this.deleteSelection().insert(insertString)
     const newCursor = this.modifyText(this, insertString)
     return newCursor
   }
 
   del(): Cursor {
+    if (this.selectionRange) return this.deleteSelection()
     if (this.isAtEnd()) {
       return this
     }
@@ -846,6 +914,7 @@ export class Cursor {
   }
 
   backspace(): Cursor {
+    if (this.selectionRange) return this.deleteSelection()
     if (this.isAtStart()) {
       return this
     }

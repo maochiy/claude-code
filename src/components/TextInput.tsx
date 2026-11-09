@@ -107,6 +107,8 @@ export default function TextInput(props: Props): React.ReactNode {
     onImagePaste: props.onImagePaste,
     disableCursorMovementForUpDownKeys: props.disableCursorMovementForUpDownKeys,
     disableEscapeDoublePress: props.disableEscapeDoublePress,
+    selectionAnchor: props.selectionAnchor,
+    onSelectionAnchorChange: props.onSelectionAnchorChange,
     externalOffset: props.cursorOffset,
     onOffsetChange: props.onChangeCursorOffset,
     inputFilter: props.inputFilter,

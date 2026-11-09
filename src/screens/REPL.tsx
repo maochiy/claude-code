@@ -510,16 +510,11 @@ import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/a
 // creating a new [] literal on every render in remote mode, which would
 // cause useEffect dependency changes and infinite re-render loops.
 const EMPTY_MCP_CLIENTS: MCPServerConnection[] = [];
+const EMPTY_TOOL_USE_CONFIRM_QUEUE: ToolUseConfirm[] = [];
 
 // Stable stub for useAssistantHistory's non-KAIROS branch — avoids a new
 // function identity each render, which would break composedOnScroll's memo.
 const HISTORY_STUB = { maybeLoadOlder: (_: ScrollBoxHandle) => {} };
-// Window after a user-initiated scroll during which type-into-empty does NOT
-// repin to bottom. Josh Rosen's workflow: Claude emits long output → scroll
-// up to read the start → start typing → before this fix, snapped to bottom.
-// https://anthropic.slack.com/archives/C07VBSHV7EV/p1773545449871739
-const RECENT_SCROLL_REPIN_WINDOW_MS = 3000;
-
 // Use LRU cache to prevent unbounded memory growth
 // 100 files should be sufficient for most coding sessions while preventing
 // memory issues when working across many files in large projects
@@ -1172,14 +1167,6 @@ export function REPL({
   // PgUp/PgDn/wheel always scroll the transcript behind the modal.
   // Plumbing kept for future modal-scroll wiring.
   const modalScrollRef = useRef<ScrollBoxHandle>(null);
-  // Timestamp of the last user-initiated scroll (wheel, PgUp/PgDn, ctrl+u,
-  // End/Home, G, drag-to-scroll). Stamped in composedOnScroll — the single
-  // chokepoint ScrollKeybindingHandler calls for every user scroll action.
-  // Programmatic scrolls (repinScroll's scrollToBottom, sticky auto-follow)
-  // do NOT go through composedOnScroll, so they don't stamp this. Ref not
-  // state: no re-render on every wheel tick.
-  const lastUserScrollTsRef = useRef(0);
-
   // Synchronous state machine for the query lifecycle. Replaces the
   // error-prone dual-state pattern where isLoading (React state, async
   // batched) and isQueryRunning (ref, sync) could desync. See QueryGuard.ts.
@@ -1554,8 +1541,7 @@ export function REPL({
     [dividerIndex, messages.length],
   );
   // Re-pin scroll to bottom and clear the unseen-messages baseline. Called
-  // on any user-driven return-to-live action (submit, type-into-empty,
-  // overlay appear/dismiss).
+  // on explicit return-to-live actions (submit, overlay appear/dismiss).
   const repinScroll = useCallback(() => {
     scrollRef.current?.scrollToBottom();
     onRepin();
@@ -1588,7 +1574,6 @@ export function REPL({
   // Compose useUnseenDivider's callbacks with the lazy-load trigger.
   const composedOnScroll = useCallback(
     (sticky: boolean, handle: ScrollBoxHandle) => {
-      lastUserScrollTsRef.current = Date.now();
       if (sticky) {
         onRepin();
       } else {
@@ -1614,21 +1599,18 @@ export function REPL({
   // Deferred messages for the Messages component — renders at transition
   // priority so the reconciler yields every 5ms, keeping input responsive
   // while the expensive message processing pipeline runs.
-  // Cap at 500 messages to limit memory double-buffering. The bypass
-  // at display-time uses sync messages during streaming and non-loading,
-  // so this cap only affects reduced-motion scenarios.
-  const DEFERRED_CAP = 500;
-  const cappedMessages = React.useMemo(
-    () => (messages.length > DEFERRED_CAP ? messages.slice(-DEFERRED_CAP) : messages),
-    [messages],
-  );
-  const deferredMessages = useDeferredValue(cappedMessages);
+  // Defer the array reference, not a truncated copy. Transcript and the
+  // reduced-motion loading path also consume this value; slicing here loses
+  // scrollable history before Messages can apply its virtualization/render cap.
+  const deferredMessages = useDeferredValue(messages);
   const deferredBehind = messages.length - deferredMessages.length;
-  if (deferredBehind > 0) {
-    logForDebugging(
-      `[useDeferredValue] Messages deferred by ${deferredBehind} (${deferredMessages.length}→${messages.length})`,
-    );
-  }
+  useEffect(() => {
+    if (deferredBehind > 0) {
+      logForDebugging(
+        `[useDeferredValue] Messages deferred by ${deferredBehind} (${deferredMessages.length}→${messages.length})`,
+      );
+    }
+  }, [deferredBehind, deferredMessages.length, messages.length]);
 
   // Frozen state for transcript mode - stores lengths instead of cloning arrays for memory efficiency
   const [frozenTranscriptState, setFrozenTranscriptState] = useState<{
@@ -1653,21 +1635,6 @@ export function REPL({
   const setInputValue = useCallback(
     (value: string) => {
       if (trySuggestBgPRIntercept(inputValueRef.current, value)) return;
-      // In fullscreen mode, typing into an empty prompt re-pins scroll to
-      // bottom. Only fires on empty→non-empty so scrolling up to reference
-      // something while composing a message doesn't yank the view back on
-      // every keystroke. Restores the pre-fullscreen muscle memory of
-      // typing to snap back to the end of the conversation.
-      // Skipped if the user scrolled within the last 3s — they're actively
-      // reading, not lost. lastUserScrollTsRef starts at 0 so the first-
-      // ever keypress (no scroll yet) always repins.
-      if (
-        inputValueRef.current === '' &&
-        value !== '' &&
-        Date.now() - lastUserScrollTsRef.current >= RECENT_SCROLL_REPIN_WINDOW_MS
-      ) {
-        repinScroll();
-      }
       // Sync ref immediately (like setMessages) so callers that read
       // inputValueRef before React commits — e.g. the auto-restore finally
       // block's `=== ''` guard — see the fresh value, not the stale render.
@@ -1675,7 +1642,7 @@ export function REPL({
       setInputValueRaw(value);
       setIsPromptInputActive(value.trim().length > 0);
     },
-    [setIsPromptInputActive, repinScroll, trySuggestBgPRIntercept],
+    [setIsPromptInputActive, trySuggestBgPRIntercept],
   );
 
   // Schedule a timeout to stop suppressing dialogs after the user stops typing.
@@ -2637,8 +2604,9 @@ export function REPL({
     // activating conditions hold — leaving the Escape keybinding inactive.
     setAbortController(null);
 
-    // forceEnd() skips the finally path — fire directly (aborted=true).
+    // forceEnd() skips the finally path — fire turn-completion signals directly.
     void mrOnTurnComplete(messagesRef.current, true);
+    sendBridgeResultRef.current();
   }
 
   // Function to handle queued command when canceling a permission request
@@ -5504,12 +5472,22 @@ export function REPL({
   };
 
   // Use frozen lengths to slice arrays, avoiding memory overhead of cloning
-  const transcriptMessages = frozenTranscriptState
-    ? deferredMessages.slice(0, frozenTranscriptState.messagesLength)
-    : deferredMessages;
-  const transcriptStreamingToolUses = frozenTranscriptState
-    ? streamingToolUses.slice(0, frozenTranscriptState.streamingToolUsesLength)
-    : streamingToolUses;
+  // Keep frozen slices referentially stable across input/other REPL updates.
+  // Fresh slices defeat Messages.memo and rerun normalization + grouping over
+  // the entire transcript even when no message changed.
+  const frozenMessagesLength = frozenTranscriptState?.messagesLength;
+  const frozenStreamingToolUsesLength = frozenTranscriptState?.streamingToolUsesLength;
+  const transcriptMessages = useMemo(
+    () => (frozenMessagesLength === undefined ? deferredMessages : deferredMessages.slice(0, frozenMessagesLength)),
+    [deferredMessages, frozenMessagesLength],
+  );
+  const transcriptStreamingToolUses = useMemo(
+    () =>
+      frozenStreamingToolUsesLength === undefined
+        ? streamingToolUses
+        : streamingToolUses.slice(0, frozenStreamingToolUsesLength),
+    [streamingToolUses, frozenStreamingToolUsesLength],
+  );
 
   // Handle shift+down for teammate navigation and background task management.
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
@@ -5631,7 +5609,7 @@ export function REPL({
         commands={commands}
         verbose={true}
         toolJSX={null}
-        toolUseConfirmQueue={[]}
+        toolUseConfirmQueue={EMPTY_TOOL_USE_CONFIRM_QUEUE}
         inProgressToolUseIDs={inProgressToolUseIDs}
         isMessageSelectorVisible={false}
         conversationId={conversationId}
@@ -6005,7 +5983,7 @@ export function REPL({
                 )}
                 {!showSpinner && !toolJSX?.isLocalJSXCommand && showExpandedTodos && tasksV2 && tasksV2.length > 0 && (
                   <Box width="100%" flexDirection="column">
-                    <TaskListV2 tasks={tasksV2} isStandalone={true} />
+                    <TaskListV2 tasks={tasksV2} isStandalone={true} isActive={isLoading} />
                   </Box>
                 )}
                 {focusedInputDialog === 'sandbox-permission' && (

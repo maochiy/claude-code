@@ -669,6 +669,11 @@ export class CCRClient {
     this.workerState.enqueue({ external_metadata: metadata })
   }
 
+  /** Wait for queued worker state changes before closing the connection. */
+  flushWorkerState(): Promise<void> {
+    return this.workerState.flush()
+  }
+
   /**
    * Handle epoch mismatch (409 Conflict). A newer CC instance has replaced
    * this one — exit immediately.

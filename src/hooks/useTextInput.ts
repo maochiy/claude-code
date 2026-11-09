@@ -1,6 +1,8 @@
 import { isInputModeCharacter } from 'src/components/PromptInput/inputModes.js'
 import { useNotifications } from 'src/context/notifications.js'
 import stripAnsi from 'strip-ansi'
+import { useState } from 'react'
+import chalk from 'chalk'
 import { markBackslashReturnUsed } from '../commands/terminalSetup/terminalSetup.js'
 import { addToHistory } from '../history.js'
 import type { Key } from '@anthropic/ink'
@@ -64,6 +66,8 @@ export type UseTextInputProps = {
   disableCursorMovementForUpDownKeys?: boolean
   disableEscapeDoublePress?: boolean
   maxVisibleLines?: number
+  selectionAnchor?: number | null
+  onSelectionAnchorChange?: (offset: number | null) => void
   externalOffset: number
   onOffsetChange: (offset: number) => void
   inputFilter?: (input: string, key: Key) => string
@@ -90,6 +94,8 @@ export function useTextInput({
   disableCursorMovementForUpDownKeys = false,
   disableEscapeDoublePress = false,
   maxVisibleLines,
+  selectionAnchor,
+  onSelectionAnchorChange,
   externalOffset,
   onOffsetChange,
   inputFilter,
@@ -103,7 +109,20 @@ export function useTextInput({
 
   const offset = externalOffset
   const setOffset = onOffsetChange
-  const cursor = Cursor.fromText(originalValue, columns, offset)
+  const [localAnchor, setLocalAnchor] = useState<number | null>(null)
+  const anchor = selectionAnchor === undefined ? localAnchor : selectionAnchor
+  const setAnchor = (next: number | null) => {
+    setLocalAnchor(next)
+    onSelectionAnchorChange?.(next)
+  }
+  const cursor = Cursor.fromText(
+    originalValue,
+    columns,
+    offset,
+    anchor == null ? 0 : anchor - offset,
+  )
+  const selectAll = () =>
+    new Cursor(cursor.measuredText, originalValue.length, -originalValue.length)
   const { addNotification, removeNotification } = useNotifications()
 
   const handleCtrlC = useDoublePress(
@@ -371,9 +390,9 @@ export function useTextInput({
         return handleMeta
       case key.tab:
         return () => cursor
-      case key.upArrow && !key.shift:
+      case key.upArrow:
         return upOrHistoryUp
-      case key.downArrow && !key.shift:
+      case key.downArrow:
         return downOrHistoryDown
       case key.leftArrow:
         return () => cursor.left()
@@ -449,10 +468,12 @@ export function useTextInput({
       // Try to delete tokens first, fall back to character backspace
       let currentCursor = cursor
       for (let i = 0; i < delCount; i++) {
-        currentCursor =
-          currentCursor.deleteTokenBefore() ?? currentCursor.backspace()
+        currentCursor = currentCursor.selectionRange
+          ? currentCursor.deleteSelection()
+          : (currentCursor.deleteTokenBefore() ?? currentCursor.backspace())
       }
 
+      setAnchor(null)
       // Update state once with the final result
       if (!cursor.equals(currentCursor)) {
         if (cursor.text !== currentCursor.text) {
@@ -475,8 +496,32 @@ export function useTextInput({
       resetYankState()
     }
 
-    const nextCursor = mapKey(key)(filteredInput)
+    const isSelectAll =
+      filteredInput.toLowerCase() === 'a' &&
+      (key.super || (process.platform !== 'darwin' && key.ctrl))
+    const nextCursor = isSelectAll
+      ? selectAll()
+      : cursor.selectionRange &&
+          (key.backspace || key.delete || (key.ctrl && filteredInput === 'h'))
+        ? cursor.deleteSelection()
+        : key.super
+          ? undefined
+          : mapKey(key)(filteredInput)
     if (nextCursor) {
+      const navigation =
+        key.leftArrow ||
+        key.rightArrow ||
+        key.upArrow ||
+        key.downArrow ||
+        key.home ||
+        key.end
+      if (isSelectAll) {
+        setAnchor(0)
+      } else if (key.shift && navigation && nextCursor.text === cursor.text) {
+        setAnchor(anchor ?? cursor.offset)
+      } else {
+        setAnchor(null)
+      }
       if (!cursor.equals(nextCursor)) {
         if (cursor.text !== nextCursor.text) {
           onChange(nextCursor.text)
@@ -505,7 +550,10 @@ export function useTextInput({
   // cursor offset to prevent stale ghost text from a previous keystroke causing
   // a one-frame jitter (ghost text state is updated via useEffect after render)
   const ghostTextForRender =
-    inlineGhostText && dim && inlineGhostText.insertPosition === offset
+    !cursor.selectionRange &&
+    inlineGhostText &&
+    dim &&
+    inlineGhostText.insertPosition === offset
       ? { text: inlineGhostText.text, dim }
       : undefined
 
@@ -519,7 +567,9 @@ export function useTextInput({
       invert,
       ghostTextForRender,
       maxVisibleLines,
+      chalk.inverse,
     ),
+    selectionRange: cursor.selectionRange,
     offset,
     setOffset,
     cursorLine: cursorPos.line - cursor.getViewportStartLine(maxVisibleLines),

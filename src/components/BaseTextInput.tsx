@@ -88,10 +88,16 @@ export function BaseTextInput({
   );
 
   // Filter out highlights that contain the cursor position
+  const selection = inputState.selectionRange;
+  // Selection is already styled grapheme-by-grapheme by Cursor, before ANSI
+  // insertion. Do not overlay semantic highlights that could hide its inverse.
+  const highlights = selection
+    ? props.highlights?.filter(h => h.end <= selection.start || h.start >= selection.end)
+    : props.highlights;
   const cursorFiltered =
-    props.showCursor && props.highlights
-      ? props.highlights.filter(h => h.dimColor || props.cursorOffset < h.start || props.cursorOffset >= h.end)
-      : props.highlights;
+    props.showCursor && highlights
+      ? highlights.filter(h => h.dimColor || props.cursorOffset < h.start || props.cursorOffset >= h.end)
+      : highlights;
 
   // Adjust highlights for viewport windowing: highlight positions reference the
   // full input text, but renderedValue only contains the windowed subset.

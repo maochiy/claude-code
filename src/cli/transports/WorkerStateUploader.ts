@@ -46,6 +46,16 @@ export class WorkerStateUploader {
     void this.drain()
   }
 
+  async flush(): Promise<void> {
+    while (!this.closed && (this.inflight || this.pending)) {
+      if (this.inflight) {
+        await this.inflight
+      } else {
+        await this.drain()
+      }
+    }
+  }
+
   close(): void {
     this.closed = true
     this.pending = null

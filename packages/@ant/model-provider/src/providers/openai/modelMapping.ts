@@ -40,20 +40,21 @@ function getModelFamily(model: string): 'haiku' | 'sonnet' | 'opus' | null {
  * Resolve the OpenAI model name for a given Anthropic model.
  *
  * Priority:
- * 1. OPENAI_MODEL env var (override all)
- * 2. OPENAI_DEFAULT_{FAMILY}_MODEL env var (e.g. OPENAI_DEFAULT_SONNET_MODEL)
- * 3. ANTHROPIC_DEFAULT_{FAMILY}_MODEL env var (backward compatibility)
- * 4. DEFAULT_MODEL_MAP lookup
- * 5. Pass through original model name
+ * 1. Explicit non-Anthropic model ID (session/agent selection)
+ * 2. OPENAI_MODEL env var (default for Anthropic aliases)
+ * 3. OPENAI_DEFAULT_{FAMILY}_MODEL env var (e.g. OPENAI_DEFAULT_SONNET_MODEL)
+ * 4. ANTHROPIC_DEFAULT_{FAMILY}_MODEL env var (backward compatibility)
+ * 5. DEFAULT_MODEL_MAP lookup
+ * 6. Pass through original model name
  */
 export function resolveOpenAIModel(anthropicModel: string): string {
+  const cleanModel = anthropicModel.replace(/\[1m\]$/i, '')
+  const family = getModelFamily(cleanModel)
+  if (!family) return cleanModel
+
   if (process.env.OPENAI_MODEL) {
     return process.env.OPENAI_MODEL
   }
-
-  const cleanModel = anthropicModel.replace(/\[1m\]$/, '')
-
-  const family = getModelFamily(cleanModel)
   if (family) {
     const openaiEnvVar = `OPENAI_DEFAULT_${family.toUpperCase()}_MODEL`
     const openaiOverride = process.env[openaiEnvVar]

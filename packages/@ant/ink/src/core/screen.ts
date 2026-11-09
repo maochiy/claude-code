@@ -743,6 +743,7 @@ export function setCellAt(
   // as a ghost cell that the diff/render pipeline skips, causing stale content
   // to leak through from previous frames.
   const prevWidth = cells[ci + 1]! & WIDTH_MASK
+  let maxX = x
   if (prevWidth === CellWidth.Wide && cell.width !== CellWidth.Wide) {
     const spacerX = x + 1
     if (spacerX < screen.width) {
@@ -754,6 +755,7 @@ export function setCellAt(
           0,
           CellWidth.Narrow,
         )
+        maxX = spacerX
       }
     }
   }
@@ -794,8 +796,9 @@ export function setCellAt(
     if (minX < damage.x) {
       damage.width += damage.x - minX
       damage.x = minX
-    } else if (x >= right) {
-      damage.width = x - damage.x + 1
+    }
+    if (maxX >= right) {
+      damage.width = maxX - damage.x + 1
     }
     if (y < damage.y) {
       damage.height += damage.y - y
@@ -804,7 +807,7 @@ export function setCellAt(
       damage.height = y - damage.y + 1
     }
   } else {
-    screen.damage = { x: minX, y, width: x - minX + 1, height: 1 }
+    screen.damage = { x: minX, y, width: maxX - minX + 1, height: 1 }
   }
 
   // If this is a wide character, create a spacer in the next column
@@ -812,6 +815,7 @@ export function setCellAt(
     const spacerX = x + 1
     if (spacerX < screen.width) {
       const spacerCI = ci + 2
+      let affectedRight = spacerX
       // If the cell we're overwriting with our SpacerTail is itself Wide,
       // clear ITS SpacerTail at x+2 too. Otherwise the orphan SpacerTail
       // makes diffEach report it as `added` and log-update's skip-spacer
@@ -830,6 +834,7 @@ export function setCellAt(
             0,
             CellWidth.Narrow,
           )
+          affectedRight = spacerX + 1
         }
       }
       cells[spacerCI] = SPACER_CHAR_INDEX
@@ -839,10 +844,10 @@ export function setCellAt(
         CellWidth.SpacerTail,
       )
 
-      // Expand damage to include SpacerTail so diff() scans it
+      // Include both the new SpacerTail and any cleared orphan tail.
       const d = screen.damage
-      if (d && spacerX >= d.x + d.width) {
-        d.width = spacerX - d.x + 1
+      if (d && affectedRight >= d.x + d.width) {
+        d.width = affectedRight - d.x + 1
       }
     }
   }

@@ -74,6 +74,7 @@ mock.module('src/services/api/openai/client.js', () => ({
 // files are not forced into ChatGPT mode.
 mock.module('src/services/api/openai/chatgptAuth.js', () => ({
   isChatGPTAuthEnabled: () => process.env.OPENAI_AUTH_MODE === 'chatgpt',
+  hasStoredChatGPTAuth: () => false,
   getValidChatGPTAuth: async () => ({
     accessToken: 'test-access-token-not-real',
     accountId: 'acct_test',
@@ -93,7 +94,37 @@ type CapturedFetch = {
   body: Record<string, unknown>
 }
 let capturedFetch: CapturedFetch | null = null
-let originalFetch: typeof globalThis.fetch
+let responseStatus = 200
+
+// The OAuth transport uses node:http, not globalThis.fetch. Mock only the
+// transport boundary so tests cannot reach the real Codex endpoint.
+mock.module('src/services/api/openai/proxiedFetch.js', () => ({
+  proxiedFetch: async (
+    url: string,
+    init: { headers?: Record<string, string>; body?: string },
+  ) => {
+    capturedFetch = {
+      url,
+      headers: init.headers ?? {},
+      body: init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {},
+    }
+    return responseStatus === 200
+      ? new Response(
+          buildFunctionCallSse(
+            'classify_result',
+            '{"shouldBlock":false,"reason":"ok"}',
+          ),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        )
+      : new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
+          status: responseStatus,
+          statusText: 'Unauthorized',
+        })
+  },
+}))
 
 const ENV_KEYS = [
   'CLAUDE_CODE_USE_OPENAI',
@@ -162,43 +193,11 @@ beforeEach(() => {
   lastChatCompletionsArgs = null
   chatCompletionsUsage = { prompt_tokens: 3, completion_tokens: 2 }
   capturedFetch = null
+  responseStatus = 200
   enableOpenAIProvider()
-  originalFetch = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input)
-    const headers: Record<string, string> = {}
-    const rawHeaders = init?.headers
-    if (
-      rawHeaders &&
-      typeof rawHeaders === 'object' &&
-      !Array.isArray(rawHeaders)
-    ) {
-      for (const [k, v] of Object.entries(
-        rawHeaders as Record<string, string>,
-      )) {
-        headers[k] = v
-      }
-    }
-    const body =
-      typeof init?.body === 'string'
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : {}
-    capturedFetch = { url, headers, body }
-    return new Response(
-      buildFunctionCallSse(
-        'classify_result',
-        '{"shouldBlock":false,"reason":"ok"}',
-      ),
-      {
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-      },
-    )
-  }) as unknown as typeof fetch
 })
 
 afterEach(() => {
-  globalThis.fetch = originalFetch
   for (const key of ENV_KEYS) {
     const value = savedEnv[key]
     if (value === undefined) delete process.env[key]
@@ -336,11 +335,7 @@ describe('sideQuery OpenAI ChatGPT OAuth path', () => {
 
   test('ChatGPT OAuth request failure propagates for fail-closed classifiers', async () => {
     process.env.OPENAI_AUTH_MODE = 'chatgpt'
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
-        status: 401,
-        statusText: 'Unauthorized',
-      })) as unknown as typeof fetch
+    responseStatus = 401
 
     const { sideQuery } = await import('../sideQuery.js')
 

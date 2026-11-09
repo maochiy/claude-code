@@ -151,6 +151,10 @@ export type BaseTextInputProps = {
    */
   readonly cursorOffset: number
 
+  /** UTF-16 anchor supplied by the parent's mouse selection handler. */
+  readonly selectionAnchor?: number | null
+  readonly onSelectionAnchorChange?: (offset: number | null) => void
+
   /**
    * Callback to set the offset of the cursor
    */
@@ -222,6 +226,7 @@ export type VimMode = 'INSERT' | 'NORMAL'
 export type BaseInputState = {
   onInput: (input: string, key: Key) => void
   renderedValue: string
+  selectionRange?: { start: number; end: number } | null
   offset: number
   setOffset: (offset: number) => void
   /** Cursor line (0-indexed) within the rendered text, accounting for wrapping. */

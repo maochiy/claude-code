@@ -14,6 +14,7 @@ import { logError } from '../utils/log.js'
 import { writeToStdout } from '../utils/process.js'
 import { getSessionIngressAuthToken } from '../utils/sessionIngressAuth.js'
 import {
+  notifySessionStateChanged,
   setSessionMetadataChangedListener,
   setSessionStateChangedListener,
 } from '../utils/sessionState.js'
@@ -135,7 +136,22 @@ export class RemoteIO extends StructuredIO {
         )
         void gracefulShutdown(1, 'other')
       })
-      registerCleanup(async () => this.ccrClient?.close())
+      registerCleanup(async () => {
+        notifySessionStateChanged('idle')
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          await Promise.race([
+            this.ccrClient!.flushWorkerState(),
+            new Promise<void>(resolve => {
+              timer = setTimeout(resolve, 1000)
+            }),
+          ])
+        } finally {
+          if (timer) clearTimeout(timer)
+          this.ccrClient?.close()
+          this.close()
+        }
+      })
 
       // Register internal event writer for transcript persistence.
       // When set, sessionStorage writes transcript messages as CCR v2
@@ -199,7 +215,7 @@ export class RemoteIO extends StructuredIO {
     }
 
     // Register for graceful shutdown cleanup
-    registerCleanup(async () => this.close())
+    if (!this.ccrClient) registerCleanup(async () => this.close())
 
     // If initial prompt is provided, send it through the input stream
     if (initialPrompt) {

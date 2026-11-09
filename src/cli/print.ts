@@ -1922,51 +1922,6 @@ function runHeadlessStreaming(
     notifySessionStateChanged('running')
     idleTimeout.stop()
 
-    headlessProfilerCheckpoint('run_entry')
-    // TODO(custom-tool-refactor): Should move to the init message, like browser
-
-    await updateSdkMcp()
-    headlessProfilerCheckpoint('after_updateSdkMcp')
-
-    // Resolve deferred plugin installation (CLAUDE_CODE_SYNC_PLUGIN_INSTALL).
-    // The promise was started eagerly so installation overlaps with other init.
-    // Awaiting here guarantees plugins are available before the first ask().
-    // If CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS is set, races against that
-    // deadline and proceeds without plugins on timeout (logging an error).
-    if (pluginInstallPromise) {
-      const timeoutMs = parseInt(
-        process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS || '',
-        10,
-      )
-      if (timeoutMs > 0) {
-        const timeout = sleep(timeoutMs).then(() => 'timeout' as const)
-        const result = await Promise.race([pluginInstallPromise, timeout])
-        if (result === 'timeout') {
-          logError(
-            new Error(
-              `CLAUDE_CODE_SYNC_PLUGIN_INSTALL: plugin installation timed out after ${timeoutMs}ms`,
-            ),
-          )
-          logEvent('tengu_sync_plugin_install_timeout', {
-            timeout_ms: timeoutMs,
-          })
-        }
-      } else {
-        await pluginInstallPromise
-      }
-      pluginInstallPromise = null
-
-      // Refresh commands, agents, and hooks now that plugins are installed
-      await refreshPluginState()
-
-      // Set up hot-reload for plugin hooks now that the initial install is done.
-      // In sync-install mode, setup.ts skips this to avoid racing with the install.
-      const { setupPluginHookHotReload } = await import(
-        '../utils/plugins/loadPluginHooks.js'
-      )
-      setupPluginHookHotReload()
-    }
-
     // Only main-thread commands (agentId===undefined) — subagent
     // notifications are drained by the subagent's mid-turn gate in query.ts.
     // Defined outside the try block so it's accessible in the post-finally
@@ -1974,6 +1929,51 @@ function runHeadlessStreaming(
     const isMainThread = (cmd: QueuedCommand) => cmd.agentId === undefined
 
     try {
+      headlessProfilerCheckpoint('run_entry')
+      // TODO(custom-tool-refactor): Should move to the init message, like browser
+
+      await updateSdkMcp()
+      headlessProfilerCheckpoint('after_updateSdkMcp')
+
+      // Resolve deferred plugin installation (CLAUDE_CODE_SYNC_PLUGIN_INSTALL).
+      // The promise was started eagerly so installation overlaps with other init.
+      // Awaiting here guarantees plugins are available before the first ask().
+      // If CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS is set, races against that
+      // deadline and proceeds without plugins on timeout (logging an error).
+      if (pluginInstallPromise) {
+        const timeoutMs = parseInt(
+          process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS || '',
+          10,
+        )
+        if (timeoutMs > 0) {
+          const timeout = sleep(timeoutMs).then(() => 'timeout' as const)
+          const result = await Promise.race([pluginInstallPromise, timeout])
+          if (result === 'timeout') {
+            logError(
+              new Error(
+                `CLAUDE_CODE_SYNC_PLUGIN_INSTALL: plugin installation timed out after ${timeoutMs}ms`,
+              ),
+            )
+            logEvent('tengu_sync_plugin_install_timeout', {
+              timeout_ms: timeoutMs,
+            })
+          }
+        } else {
+          await pluginInstallPromise
+        }
+        pluginInstallPromise = null
+
+        // Refresh commands, agents, and hooks now that plugins are installed
+        await refreshPluginState()
+
+        // Set up hot-reload for plugin hooks now that the initial install is done.
+        // In sync-install mode, setup.ts skips this to avoid racing with the install.
+        const { setupPluginHookHotReload } = await import(
+          '../utils/plugins/loadPluginHooks.js'
+        )
+        setupPluginHookHotReload()
+      }
+
       let command: QueuedCommand | undefined
       let waitingForAgents = false
 
@@ -2562,24 +2562,30 @@ function runHeadlessStreaming(
       return
     } finally {
       runPhase = 'finally_flush'
-      // Flush pending internal events before going idle
-      await structuredIO.flushInternalEvents()
-      runPhase = 'finally_post_flush'
-      if (!isShuttingDown()) {
-        notifySessionStateChanged('idle')
-        // Drain so the idle session_state_changed SDK event (plus any
-        // terminal task_notification bookends emitted during bg-agent
-        // teardown) reach the output stream before we block on the next
-        // command. The do-while drain above only runs while
-        // waitingForAgents; once we're here the next drain would be the
-        // top of the next run(), which won't come if input is idle.
-        for (const event of drainSdkEvents()) {
-          output.enqueue(event)
+      try {
+        // Flush pending internal events before going idle
+        await structuredIO.flushInternalEvents()
+      } finally {
+        runPhase = 'finally_post_flush'
+        try {
+          notifySessionStateChanged('idle')
+          if (!isShuttingDown()) {
+            // Drain so the idle session_state_changed SDK event (plus any
+            // terminal task_notification bookends emitted during bg-agent
+            // teardown) reach the output stream before we block on the next
+            // command. The do-while drain above only runs while
+            // waitingForAgents; once we're here the next drain would be the
+            // top of the next run(), which won't come if input is idle.
+            for (const event of drainSdkEvents()) {
+              output.enqueue(event)
+            }
+          }
+        } finally {
+          running = false
+          // Start idle timer when we finish processing and are waiting for input
+          idleTimeout.start()
         }
       }
-      running = false
-      // Start idle timer when we finish processing and are waiting for input
-      idleTimeout.start()
     }
 
     // Proactive tick: if proactive is active and queue is empty, inject a tick

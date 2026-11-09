@@ -279,12 +279,16 @@ function PromptInput({
     key?: string;
   }>({ show: false });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
+  const inputDrag = useRef<{ anchor: number; viewportStart: number } | null>(null);
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
   const lastInternalInputRef = React.useRef(input);
   if (input !== lastInternalInputRef.current) {
     // Input changed externally (not through any internal handler) — move cursor to end
     setCursorOffset(input.length);
+    setSelectionAnchor(null);
+    inputDrag.current = null;
     lastInternalInputRef.current = input;
   }
   // Wrap onInputChange to track internal changes before they trigger re-render
@@ -2116,8 +2120,7 @@ function PromptInput({
   const { columns, rows } = useTerminalSize();
   const textInputColumns = columns - 3 - companionReservedColumns(columns, companionSpeaking);
 
-  // POC: click-to-position-cursor. Mouse tracking is only enabled inside
-  // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
+  // Ink maps terminal mouse rows into frame coordinates in both screen modes.
   // localCol/localRow are relative to the onClick Box's top-left; the Box
   // tightly wraps the text input so they map directly to (column, line)
   // in the Cursor wrap model. MeasuredText.getOffsetFromPosition handles
@@ -2138,7 +2141,36 @@ function PromptInput({
         line: e.localRow + viewportStart,
         column: e.localCol,
       });
+      setSelectionAnchor(null);
       setCursorOffset(offset);
+    },
+    [input, textInputColumns, isSearchingHistory, cursorOffset, maxVisibleLines],
+  );
+
+  const handleInputMouse = useCallback(
+    (e: {
+      type: 'mousedown' | 'mousedrag' | 'mouseup';
+      localCol: number;
+      localRow: number;
+      stopImmediatePropagation(): void;
+    }) => {
+      if (isSearchingHistory) return;
+      e.stopImmediatePropagation();
+      const c = Cursor.fromText(input, textInputColumns, cursorOffset);
+      const viewportStart = inputDrag.current?.viewportStart ?? c.getViewportStartLine(maxVisibleLines);
+      const offset = c.measuredText.getOffsetFromPosition({
+        line: Math.max(0, e.localRow + viewportStart),
+        column: Math.max(0, e.localCol),
+      });
+      if (e.type === 'mousedown') {
+        inputDrag.current = { anchor: offset, viewportStart };
+        setSelectionAnchor(null);
+        setCursorOffset(offset);
+      } else if (inputDrag.current) {
+        setSelectionAnchor(inputDrag.current.anchor === offset ? null : inputDrag.current.anchor);
+        setCursorOffset(offset);
+        if (e.type === 'mouseup') inputDrag.current = null;
+      }
     },
     [input, textInputColumns, isSearchingHistory, cursorOffset, maxVisibleLines],
   );
@@ -2387,6 +2419,8 @@ function PromptInput({
     disableEscapeDoublePress: suggestions.length > 0,
     cursorOffset,
     onChangeCursorOffset: setCursorOffset,
+    selectionAnchor,
+    onSelectionAnchorChange: setSelectionAnchor,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
     focus: !isSearchingHistory && !isModalOverlayActive && !footerItemSelected,
@@ -2489,7 +2523,12 @@ function PromptInput({
               viewingAgentName={viewingAgentName}
               viewingAgentColor={viewingAgentColor}
             />
-            <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+            <Box
+              flexGrow={1}
+              flexShrink={1}
+              onClick={handleInputClick}
+              {...{ onMouseDown: handleInputMouse, onMouseDrag: handleInputMouse, onMouseUp: handleInputMouse }}
+            >
               {textInputElement}
             </Box>
           </Box>
@@ -2514,7 +2553,12 @@ function PromptInput({
             viewingAgentName={viewingAgentName}
             viewingAgentColor={viewingAgentColor}
           />
-          <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
+          <Box
+            flexGrow={1}
+            flexShrink={1}
+            onClick={handleInputClick}
+            {...{ onMouseDown: handleInputMouse, onMouseDrag: handleInputMouse, onMouseUp: handleInputMouse }}
+          >
             {textInputElement}
           </Box>
         </Box>

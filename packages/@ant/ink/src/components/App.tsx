@@ -44,7 +44,7 @@ import reconciler from '../core/reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../core/selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../core/terminal.js';
 import { getTerminalFocused, setTerminalFocused } from '../core/terminal-focus-state.js';
-import { TerminalQuerier, xtversion } from '../core/terminal-querier.js';
+import { cursorPosition, TerminalQuerier, xtversion } from '../core/terminal-querier.js';
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -53,7 +53,16 @@ import {
   FOCUS_IN,
   FOCUS_OUT,
 } from '../core/termio/csi.js';
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../core/termio/dec.js';
+import {
+  DBP,
+  DFE,
+  DISABLE_MOUSE_TRACKING,
+  EBP,
+  EFE,
+  ENABLE_MOUSE_TRACKING,
+  HIDE_CURSOR,
+  SHOW_CURSOR,
+} from '../core/termio/dec.js';
 import AppContext from './AppContext.js';
 import { ClockProvider } from './ClockContext.js';
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js';
@@ -89,9 +98,10 @@ type Props = {
   readonly onSelectionChange: () => void;
   // Dispatch a click at (col, row) — hit-tests the DOM tree and bubbles
   // onClick handlers. Returns true if a DOM handler consumed the click.
-  // No-op (returns false) outside fullscreen mode (Ink.dispatchClick
-  // gates on altScreenActive).
+  // Main-screen coordinates are calibrated using DSR before dispatch.
   readonly onClickAt: (col: number, row: number) => boolean;
+  readonly onMouseAction?: (col: number, row: number, type: 'mousedown' | 'mousedrag' | 'mouseup') => boolean;
+  readonly getMouseCursorRow?: () => number | null;
   // Dispatch hover (onMouseEnter/onMouseLeave) as the pointer moves over
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
@@ -169,6 +179,37 @@ export default class App extends PureComponent<Props, State> {
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
   querier = new TerminalQuerier(this.props.stdout);
+  mouseRowOffset: number | null = null;
+  mouseCaptured = false;
+  mouseLastCol = 0;
+  mouseLastRow = 0;
+  mouseQueue: ParsedMouse[] | null = null;
+
+  // DSR is sampled before dispatch, with the logical caret sampled at the
+  // same instant. This handles short main-screen renders below shell output
+  // as well as frames taller than the viewport (negative screen origin).
+  handleMouse(m: ParsedMouse): void {
+    if (this.mouseQueue) {
+      this.mouseQueue.push(m);
+      return;
+    }
+    const cursorRow = this.props.getMouseCursorRow?.();
+    if (cursorRow == null) {
+      this.mouseRowOffset = 0;
+      handleMouseEvent(this, m);
+      return;
+    }
+    this.mouseQueue = [m];
+    void this.querier.send(cursorPosition()).then(position => {
+      const queued = this.mouseQueue ?? [];
+      this.mouseQueue = null;
+      // Unsupported DSR: don't guess and edit the wrong text.
+      if (!position) return;
+      this.mouseRowOffset = cursorRow - (position.row - 1);
+      for (const item of queued) handleMouseEvent(this, item);
+    });
+    void this.querier.flush();
+  }
 
   // Multi-click tracking for double/triple-click text selection. A click
   // within MULTI_CLICK_TIMEOUT_MS and MULTI_CLICK_DISTANCE of the previous
@@ -320,6 +361,13 @@ export default class App extends PureComponent<Props, State> {
         this.props.stdout.write(EBP);
         // Enable terminal focus reporting (DECSET 1004)
         this.props.stdout.write(EFE);
+        if (
+          this.props.stdout.isTTY &&
+          process.env.CLAUDE_CODE_DISABLE_MOUSE !== '1' &&
+          !defaultCallbacks.isMouseClicksDisabled()
+        ) {
+          this.props.stdout.write(ENABLE_MOUSE_TRACKING);
+        }
         // Enable extended key reporting so ctrl+shift+<letter> is
         // distinguishable from ctrl+<letter>. We write both the kitty stack
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
@@ -371,7 +419,7 @@ export default class App extends PureComponent<Props, State> {
       // Disable terminal focus reporting (DECSET 1004)
       this.props.stdout.write(DFE);
       // Disable bracketed paste mode
-      this.props.stdout.write(DBP);
+      this.props.stdout.write(DBP + DISABLE_MOUSE_TRACKING);
       stdin.setRawMode(false);
       stdin.removeListener('readable', this.handleReadable);
       stdin.unref();
@@ -570,11 +618,11 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
       continue;
     }
 
-    // Mouse click/drag events update selection state (fullscreen only).
+    // Mouse actions select editable input or fall back to message copying.
     // Terminal sends 1-indexed col/row; convert to 0-indexed for the
     // screen buffer. Button bit 0x20 = drag (motion while button held).
     if (item.kind === 'mouse') {
-      handleMouseEvent(app, item);
+      app.handleMouse(item);
       continue;
     }
 
@@ -589,6 +637,12 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     }
     if (sequence === FOCUS_OUT) {
       app.handleTerminalFocus(false);
+      // Don't replay queued presses after the terminal has lost focus.
+      if (app.mouseQueue) app.mouseQueue.length = 0;
+      if (app.mouseCaptured) {
+        app.props.onMouseAction?.(app.mouseLastCol, app.mouseLastRow, 'mouseup');
+        app.mouseCaptured = false;
+      }
       // Defensive: if we lost the release event (mouse released outside
       // terminal window — some emulators drop it rather than capturing the
       // pointer), focus-out is the next observable signal that the drag is
@@ -633,8 +687,25 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   const sel = app.props.selection;
   // Terminal coords are 1-indexed; screen buffer is 0-indexed
   const col = m.col - 1;
-  const row = m.row - 1;
+  const row = m.row - 1 + (app.mouseRowOffset ?? 0);
   const baseButton = m.button & 0x03;
+  const motion = (m.button & 0x20) !== 0;
+  if (app.mouseCaptured) {
+    const release = m.action === 'release' || baseButton !== 0 || !motion;
+    app.props.onMouseAction?.(col, row, release ? 'mouseup' : 'mousedrag');
+    app.mouseLastCol = col;
+    app.mouseLastRow = row;
+    if (release) app.mouseCaptured = false;
+    // A fresh press recovers a dropped release and starts a new gesture.
+    if (!(m.action === 'press' && !motion && baseButton === 0)) return;
+  }
+  if (m.action === 'press' && !motion && baseButton === 0 && app.props.onMouseAction?.(col, row, 'mousedown')) {
+    app.mouseCaptured = true;
+    app.mouseLastCol = col;
+    app.mouseLastRow = row;
+    app.clickCount = 0;
+    return;
+  }
 
   if (m.action === 'press') {
     if ((m.button & 0x20) !== 0 && baseButton === 3) {

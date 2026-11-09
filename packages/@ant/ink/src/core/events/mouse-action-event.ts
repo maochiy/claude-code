@@ -1,5 +1,7 @@
 import { Event } from './event.js'
 import type { EventTarget } from './terminal-event.js'
+import type { DOMElement } from '../dom.js'
+import { nodeCache } from '../node-cache.js'
 
 /**
  * Mouse action event (mousedown, mouseup, mousedrag).
@@ -37,10 +39,9 @@ export class MouseActionEvent extends Event {
 
   /** Recompute local coords relative to the target Box. */
   prepareForTarget(target: EventTarget): void {
-    const dom = target as unknown as {
-      yogaNode?: { getComputedLeft?(): number; getComputedTop?(): number }
-    }
-    this.localCol = this.col - (dom.yogaNode?.getComputedLeft?.() ?? 0)
-    this.localRow = this.row - (dom.yogaNode?.getComputedTop?.() ?? 0)
+    // Cached rects include all ancestors and ScrollBox translations.
+    const rect = nodeCache.get(target as unknown as DOMElement)
+    this.localCol = this.col - (rect?.x ?? 0)
+    this.localRow = this.row - (rect?.y ?? 0)
   }
 }

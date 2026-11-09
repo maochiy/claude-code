@@ -4,6 +4,7 @@ import type { DOMElement } from '../core/dom.js';
 import type { ClickEvent } from '../core/events/click-event.js';
 import type { FocusEvent } from '../core/events/focus-event.js';
 import type { KeyboardEvent } from '../core/events/keyboard-event.js';
+import type { MouseActionEvent } from '../core/events/mouse-action-event.js';
 import type { Styles } from '../core/styles.js';
 import * as warn from '../core/warn.js';
 
@@ -27,6 +28,10 @@ export type Props = Except<Styles, 'textWrap'> & {
    * ancestors; call `event.stopImmediatePropagation()` to stop bubbling.
    */
   onClick?: (event: ClickEvent) => void;
+  /** Consuming mousedown captures subsequent drag/release, even outside this Box. */
+  onMouseDown?: (event: MouseActionEvent) => void;
+  onMouseDrag?: (event: MouseActionEvent) => void;
+  onMouseUp?: (event: MouseActionEvent) => void;
   onFocus?: (event: FocusEvent) => void;
   onFocusCapture?: (event: FocusEvent) => void;
   onBlur?: (event: FocusEvent) => void;
@@ -57,6 +62,9 @@ function Box({
   tabIndex,
   autoFocus,
   onClick,
+  onMouseDown,
+  onMouseDrag,
+  onMouseUp,
   onFocus,
   onFocusCapture,
   onBlur,
@@ -92,6 +100,7 @@ function Box({
       tabIndex={tabIndex}
       autoFocus={autoFocus}
       onClick={onClick}
+      {...{ onMouseDown, onMouseDrag, onMouseUp }}
       onFocus={onFocus as unknown as (event: React.FocusEvent<Element, Element>) => void}
       onFocusCapture={onFocusCapture as unknown as (event: React.FocusEvent<Element, Element>) => void}
       onBlur={onBlur as unknown as (event: React.FocusEvent<Element, Element>) => void}

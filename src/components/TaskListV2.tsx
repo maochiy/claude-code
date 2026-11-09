@@ -19,6 +19,7 @@ import ThemedText from './design-system/ThemedText.js';
 type Props = {
   tasks: Task[];
   isStandalone?: boolean;
+  isActive?: boolean;
 };
 
 const RECENT_COMPLETED_TTL_MS = 30_000;
@@ -32,7 +33,7 @@ function byIdAsc(a: Task, b: Task): number {
   return a.id.localeCompare(b.id);
 }
 
-export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactNode {
+export function TaskListV2({ tasks, isStandalone = false, isActive = true }: Props): React.ReactNode {
   const teamContext = useAppState(s => s.teamContext);
   const appStateTasks = useAppState(s => s.tasks);
   const [, forceUpdate] = React.useState(0);
@@ -117,7 +118,7 @@ export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactN
   const activeTeammates = new Set<string>();
   if (isAgentSwarmsEnabled()) {
     for (const bgTask of Object.values(appStateTasks)) {
-      if (isInProcessTeammateTask(bgTask) && bgTask.status === 'running') {
+      if (isInProcessTeammateTask(bgTask) && bgTask.status === 'running' && !bgTask.isIdle) {
         activeTeammates.add(bgTask.identity.agentName);
         activeTeammates.add(bgTask.identity.agentId);
         const activities = bgTask.progress?.recentActivities;
@@ -135,6 +136,7 @@ export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactN
   const completedCount = count(tasks, t => t.status === 'completed');
   const pendingCount = count(tasks, t => t.status === 'pending');
   const inProgressCount = tasks.length - completedCount - pendingCount;
+  const isWaiting = isStandalone && !isActive && activeTeammates.size === 0 && inProgressCount > 0;
   // Unresolved tasks (open or in_progress) block dependent tasks
   const unresolvedTaskIds = new Set(tasks.filter(t => t.status !== 'completed').map(t => t.id));
 
@@ -186,7 +188,7 @@ export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactN
     const hiddenInProgress = count(hiddenTasks, t => t.status === 'in_progress');
     const hiddenCompleted = count(hiddenTasks, t => t.status === 'completed');
     if (hiddenInProgress > 0) {
-      parts.push(`${hiddenInProgress} in progress`);
+      parts.push(`${hiddenInProgress} ${isWaiting ? 'unfinished' : 'in progress'}`);
     }
     if (hiddenPending > 0) {
       parts.push(`${hiddenPending} pending`);
@@ -207,6 +209,7 @@ export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactN
           openBlockers={task.blockedBy.filter(id => unresolvedTaskIds.has(id))}
           activity={task.owner ? teammateActivity[task.owner] : undefined}
           ownerActive={task.owner ? activeTeammates.has(task.owner) : false}
+          isWaiting={isWaiting}
           columns={columns}
         />
       ))}
@@ -226,12 +229,13 @@ export function TaskListV2({ tasks, isStandalone = false }: Props): React.ReactN
             {inProgressCount > 0 && (
               <>
                 <Text bold>{inProgressCount}</Text>
-                {' in progress, '}
+                {isWaiting ? ' unfinished, ' : ' in progress, '}
               </>
             )}
             <Text bold>{pendingCount}</Text>
             {' open)'}
           </Text>
+          {isWaiting && <Text dimColor> — waiting to continue</Text>}
         </Box>
         {content}
       </Box>
@@ -247,6 +251,7 @@ type TaskItemProps = {
   openBlockers: string[];
   activity?: string;
   ownerActive: boolean;
+  isWaiting: boolean;
   columns: number;
 };
 
@@ -264,12 +269,20 @@ function getTaskIcon(status: Task['status']): {
   }
 }
 
-function TaskItem({ task, ownerColor, openBlockers, activity, ownerActive, columns }: TaskItemProps): React.ReactNode {
+function TaskItem({
+  task,
+  ownerColor,
+  openBlockers,
+  activity,
+  ownerActive,
+  isWaiting,
+  columns,
+}: TaskItemProps): React.ReactNode {
   const isCompleted = task.status === 'completed';
   const isInProgress = task.status === 'in_progress';
   const isBlocked = openBlockers.length > 0;
 
-  const { icon, color } = getTaskIcon(task.status);
+  const { icon, color } = isWaiting && isInProgress ? getTaskIcon('pending') : getTaskIcon(task.status);
 
   const showActivity = isInProgress && !isBlocked && activity;
 
@@ -290,7 +303,11 @@ function TaskItem({ task, ownerColor, openBlockers, activity, ownerActive, colum
     <Box flexDirection="column">
       <Box>
         <Text color={color}>{icon} </Text>
-        <Text bold={isInProgress} strikethrough={isCompleted} dimColor={isCompleted || isBlocked}>
+        <Text
+          bold={isInProgress && !isWaiting}
+          strikethrough={isCompleted}
+          dimColor={isCompleted || isBlocked || isWaiting}
+        >
           {displaySubject}
         </Text>
         {showOwner && (

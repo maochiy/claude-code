@@ -22,7 +22,7 @@ export type RenderOptions = {
   altScreen: boolean
   // True when the previous frame's screen buffer was mutated post-render
   // (selection overlay), reset to blank (alt-screen enter/resize/SIGCONT),
-  // or reset to 0×0 (forceRedraw). Blitting from such a prevScreen would
+  // or reset to 0×0 (repaint). Blitting from such a prevScreen would
   // copy stale inverted cells, blanks, or nothing. When false, blit is safe.
   prevFrameContaminated: boolean
 }
@@ -118,7 +118,7 @@ export default function createRenderer(
 
     // prevFrameContaminated: selection overlay mutated the returned screen
     // buffer post-render (in ink.tsx), resetFramesForAltScreen() replaced it
-    // with blanks, or forceRedraw() reset it to 0×0. Blit on the NEXT frame
+    // with blanks, or repaint() reset it to 0×0. Blit on the NEXT frame
     // would copy stale inverted cells / blanks / nothing. When clean, blit
     // restores the O(unchanged) fast path for steady-state frames (spinner
     // tick, text stream).

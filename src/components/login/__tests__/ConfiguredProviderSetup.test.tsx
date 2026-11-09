@@ -114,6 +114,7 @@ describe('ConfiguredProviderSetup', () => {
 
     await writeInput(setup.stdin, '\r');
     await writeInput(setup.stdin, '\r');
+    await writeInput(setup.stdin, '\r');
 
     expect(setup.output()).toContain('Add Model #1');
   });
@@ -131,6 +132,7 @@ describe('ConfiguredProviderSetup', () => {
       },
     });
 
+    await writeInput(setup.stdin, '\r');
     await writeInput(setup.stdin, '\r');
     await writeInput(setup.stdin, '\r');
 
