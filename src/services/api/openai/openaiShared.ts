@@ -62,6 +62,20 @@ export function getOfficialOpenAIPromptCacheKey(
 }
 
 /**
+ * Whether the error is an HTTP 400 (Bad Request).
+ *
+ * Duck-types the OpenAI SDK `APIError.status` property so callers don't need
+ * to import SDK error classes.
+ */
+export function is400BadRequest(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { status?: unknown }).status === 400
+  )
+}
+
+/**
  * Merge a delta usage into the accumulated usage, preserving cache-related
  * fields from previous values when the delta carries explicit zeroes or
  * undefined values.

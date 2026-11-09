@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { anthropicMessagesToOpenAI } from '../openaiConvertMessages.js'
+import {
+  anthropicMessagesToOpenAI,
+  IMAGE_OMITTED_PLACEHOLDER,
+  openAIMessagesContainImage,
+  stripImagePartsFromOpenAIMessages,
+} from '../openaiConvertMessages.js'
 import type { UserMessage, AssistantMessage } from '../../types/message.js'
 
 // Helpers to create internal-format messages
@@ -704,5 +709,116 @@ describe('DeepSeek thinking mode (enableThinking)', () => {
     expect(assistant.content).toBeNull()
     expect(assistant.reasoning_content).toBe('Reasoning only.')
     expect(assistant.tool_calls).toHaveLength(1)
+  })
+})
+
+describe('openAIMessagesContainImage', () => {
+  test('detects image_url in multimodal user message', () => {
+    const messages = [
+      { role: 'system' as const, content: 'sys' },
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'what is this?' },
+          {
+            type: 'image_url' as const,
+            image_url: { url: 'data:image/png;base64,AAA' },
+          },
+        ],
+      },
+    ]
+    expect(openAIMessagesContainImage(messages)).toBe(true)
+  })
+
+  test('returns false for text-only messages', () => {
+    const messages = [
+      { role: 'system' as const, content: 'sys' },
+      { role: 'user' as const, content: 'hello' },
+      { role: 'assistant' as const, content: 'hi' },
+      {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: 'plain text' }],
+      },
+    ]
+    expect(openAIMessagesContainImage(messages)).toBe(false)
+  })
+
+  test('returns false for empty messages', () => {
+    expect(openAIMessagesContainImage([])).toBe(false)
+  })
+})
+
+describe('stripImagePartsFromOpenAIMessages', () => {
+  test('removes image parts and merges remaining text with placeholder', () => {
+    const messages = [
+      { role: 'system' as const, content: 'sys' },
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: '看这个问题' },
+          {
+            type: 'image_url' as const,
+            image_url: { url: 'data:image/png;base64,AAA' },
+          },
+        ],
+      } as any,
+      { role: 'assistant' as const, content: 'ok' },
+    ]
+    const stripped = stripImagePartsFromOpenAIMessages(messages)
+    expect(stripped).toHaveLength(3)
+    expect(stripped[1]).toEqual({
+      role: 'user',
+      content: `看这个问题\n\n${IMAGE_OMITTED_PLACEHOLDER}`,
+    })
+    // 其他消息原样保留
+    expect(stripped[0]).toBe(messages[0])
+    expect(stripped[2]).toBe(messages[2])
+  })
+
+  test('replaces image-only message with placeholder text', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          {
+            type: 'image_url' as const,
+            image_url: { url: 'https://example.com/a.png' },
+          },
+        ],
+      } as any,
+    ]
+    const stripped = stripImagePartsFromOpenAIMessages(messages)
+    expect(stripped).toEqual([
+      { role: 'user', content: IMAGE_OMITTED_PLACEHOLDER },
+    ])
+  })
+
+  test('supports custom placeholder', () => {
+    const messages = [
+      {
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'hi' },
+          {
+            type: 'image_url' as const,
+            image_url: { url: 'https://example.com/a.png' },
+          },
+        ],
+      } as any,
+    ]
+    const stripped = stripImagePartsFromOpenAIMessages(messages, '[no image]')
+    expect(stripped[0].content).toBe('hi\n\n[no image]')
+  })
+
+  test('leaves messages without images untouched', () => {
+    const messages = [
+      { role: 'user' as const, content: 'plain' },
+      {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: 'array text' }],
+      } as any,
+    ]
+    const stripped = stripImagePartsFromOpenAIMessages(messages)
+    expect(stripped).toEqual(messages)
   })
 })

@@ -18,6 +18,7 @@ import { getOpenAIClient } from './client.js'
 import {
   formatOpenAIPromptCacheKey,
   getOfficialOpenAIPromptCacheKey,
+  is400BadRequest,
   updateOpenAIUsage,
 } from './openaiShared.js'
 import {
@@ -25,6 +26,8 @@ import {
   adaptOpenAIStreamToAnthropic,
   anthropicToolsToOpenAI,
   anthropicToolChoiceToOpenAI,
+  openAIMessagesContainImage,
+  stripImagePartsFromOpenAIMessages,
 } from '@ant/model-provider'
 import { resolveProviderModelId } from '../../../utils/model/providerModel.js'
 import { isChatGPTAuthEnabled } from './chatgptAuth.js'
@@ -243,6 +246,8 @@ export async function* queryModelOpenAI(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // 降级重试的提示信息：在 try 内赋值，catch 中需要读取，故声明在 try 外。
+  let imageRetryHint = ''
   try {
     // 1. Resolve model name
     const openaiModel = resolveProviderModelId(options.model, 'openai')
@@ -383,6 +388,56 @@ export async function* queryModelOpenAI(
       : getOfficialOpenAIPromptCacheKey(process.env.OPENAI_BASE_URL, sessionId)
     const useOfficialOpenAICache = promptCacheKey !== undefined
 
+    // 某些 OpenAI 兼容网关（one-api/new-api 系）对纯文本模型收到带图请求时
+    // 直接 400（"The item of `content` should be a message of a certain modal"）。
+    // 此时剥离图片降级重试一次，把硬失败变成无图会话，而不是整轮请求报废。
+    const requestHasImages = openAIMessagesContainImage(openaiMessages)
+    let requestMessages = openaiMessages
+    let imagesStripped = false
+
+    const createChatCompletion = async () => {
+      const client = getOpenAIClient({
+        maxRetries: 0,
+        fetchOverride: options.fetchOverride as unknown as typeof fetch,
+        source: options.querySource,
+      })
+      const create = (messages: typeof openaiMessages) =>
+        client.chat.completions.create(
+          buildOpenAIRequestBody({
+            model: openaiModel,
+            messages,
+            tools: openaiTools,
+            toolChoice: openaiToolChoice,
+            enableThinking,
+            reasoningEffort: chatReasoningEffort,
+            maxTokens,
+            temperatureOverride: options.temperatureOverride,
+            promptCacheKey,
+          }),
+          { signal },
+        )
+      try {
+        return await create(requestMessages)
+      } catch (error) {
+        if (requestHasImages && !imagesStripped && is400BadRequest(error)) {
+          logForDebugging(
+            '[OpenAI] 400 with image content — retrying without images',
+            { level: 'warn' },
+          )
+          requestMessages = stripImagePartsFromOpenAIMessages(openaiMessages)
+          imagesStripped = true
+          try {
+            return await create(requestMessages)
+          } catch (retryError) {
+            imageRetryHint =
+              '\n\n（注：请求包含图片，已尝试剥离图片后重试仍失败——当前模型或端点可能不支持视觉输入）'
+            throw retryError
+          }
+        }
+        throw error
+      }
+    }
+
     logForDebugging(
       `[OpenAI] Calling model=${openaiModel}, messages=${openaiMessages.length}, tools=${openaiTools.length}, thinking=${enableThinking}${promptCacheKey ? `, prompt_cache_key=${promptCacheKey}` : ''}`,
     )
@@ -407,24 +462,7 @@ export async function* queryModelOpenAI(
           openaiModel,
         )
       : adaptOpenAIStreamToAnthropic(
-          await getOpenAIClient({
-            maxRetries: 0,
-            fetchOverride: options.fetchOverride as unknown as typeof fetch,
-            source: options.querySource,
-          }).chat.completions.create(
-            buildOpenAIRequestBody({
-              model: openaiModel,
-              messages: openaiMessages,
-              tools: openaiTools,
-              toolChoice: openaiToolChoice,
-              enableThinking,
-              reasoningEffort: chatReasoningEffort,
-              maxTokens,
-              temperatureOverride: options.temperatureOverride,
-              promptCacheKey,
-            }),
-            { signal },
-          ),
+          await createChatCompletion(),
           openaiModel,
           { includeCacheWriteTokens: useOfficialOpenAICache },
         )
@@ -559,7 +597,7 @@ export async function* queryModelOpenAI(
     recordLLMObservation(options.langfuseTrace ?? null, {
       model: openaiModel,
       provider: 'openai',
-      input: convertMessagesToLangfuse(openaiMessages),
+      input: convertMessagesToLangfuse(requestMessages),
       output: convertOutputToLangfuse(collectedMessages),
       usage: {
         input_tokens: usage.input_tokens,
@@ -592,7 +630,7 @@ export async function* queryModelOpenAI(
     const errorMessage = error instanceof Error ? error.message : String(error)
     logForDebugging(`[OpenAI] Error: ${errorMessage}`, { level: 'error' })
     yield createAssistantAPIErrorMessage({
-      content: `API Error: ${errorMessage}`,
+      content: `API Error: ${errorMessage}${imageRetryHint}`,
       apiError: 'api_error',
       error: (error instanceof Error
         ? error

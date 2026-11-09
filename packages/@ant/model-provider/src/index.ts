@@ -60,7 +60,12 @@ export {
 } from './errorUtils.js'
 
 // Shared OpenAI conversion utilities
-export { anthropicMessagesToOpenAI } from './shared/openaiConvertMessages.js'
+export {
+  anthropicMessagesToOpenAI,
+  openAIMessagesContainImage,
+  stripImagePartsFromOpenAIMessages,
+  IMAGE_OMITTED_PLACEHOLDER,
+} from './shared/openaiConvertMessages.js'
 export type { ConvertMessagesOptions } from './shared/openaiConvertMessages.js'
 export {
   anthropicToolsToOpenAI,
