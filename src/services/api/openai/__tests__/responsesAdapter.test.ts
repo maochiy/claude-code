@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { buildResponsesRequest, extractUsage } from '../responsesAdapter.js'
+import {
+  adaptResponsesStreamToAnthropic,
+  buildResponsesRequest,
+  extractUsage,
+} from '../responsesAdapter.js'
 import { formatOpenAIPromptCacheKey } from '../openaiShared.js'
 import { calculateCacheHitRate } from '../../../../utils/cacheWarning.js'
 
@@ -165,5 +169,166 @@ describe('extractUsage (OpenAI Responses → Anthropic usage)', () => {
     expect(usage.cache_read_input_tokens).toBe(4_000)
     expect(usage.cache_creation_input_tokens).toBe(1_000)
     expect(usage.input_tokens).toBe(0)
+  })
+})
+
+describe('adaptResponsesStreamToAnthropic function call arguments', () => {
+  async function adapt(events: Record<string, unknown>[]) {
+    const stream = (async function* () {
+      yield* events
+    })()
+    const result: Record<string, unknown>[] = []
+    for await (const event of adaptResponsesStreamToAnthropic(stream, 'test')) {
+      result.push(event as unknown as Record<string, unknown>)
+    }
+    return result
+  }
+
+  const added = {
+    type: 'response.output_item.added',
+    output_index: 0,
+    item: { type: 'function_call', call_id: 'call_1', name: 'test_tool' },
+  }
+  const completed = (argumentsValue?: string) => ({
+    type: 'response.completed',
+    response: {
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'call_1',
+          name: 'test_tool',
+          ...(argumentsValue === undefined
+            ? {}
+            : { arguments: argumentsValue }),
+        },
+      ],
+    },
+  })
+  const argumentDeltas = (events: Record<string, unknown>[]) =>
+    events
+      .filter(event => event.type === 'content_block_delta')
+      .map(event => (event.delta as Record<string, unknown>).partial_json)
+
+  test('emits streamed deltas once when all terminal events repeat full arguments', async () => {
+    const events = await adapt([
+      added,
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '{"x":',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '1}',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        arguments: '{"x":1}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: { type: 'function_call', arguments: '{"x":1}' },
+      },
+      completed('{"x":1}'),
+    ])
+
+    expect(argumentDeltas(events)).toEqual(['{"x":', '1}'])
+    expect(
+      events.filter(event => event.type === 'content_block_stop'),
+    ).toHaveLength(1)
+  })
+
+  test('completes a streamed prefix using only the missing suffix', async () => {
+    const events = await adapt([
+      added,
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '{"x":',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        output_index: 0,
+        arguments: '{"x":1}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: { type: 'function_call', arguments: '{"x":1}' },
+      },
+      completed('{"x":1}'),
+    ])
+
+    expect(argumentDeltas(events)).toEqual(['{"x":', '1}'])
+  })
+
+  test.each([
+    [
+      'arguments.done',
+      [
+        {
+          type: 'response.function_call_arguments.done',
+          output_index: 0,
+          arguments: '{"x":1}',
+        },
+        { type: 'response.output_item.done', output_index: 0 },
+      ],
+    ],
+    [
+      'output_item.done',
+      [
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: { type: 'function_call', arguments: '{"x":1}' },
+        },
+      ],
+    ],
+    [
+      'response.completed',
+      [{ type: 'response.output_item.done', output_index: 0 }],
+    ],
+  ])('emits full arguments from %s when no deltas arrive', async (_source, terminalEvents) => {
+    const events = await adapt([added, ...terminalEvents, completed('{"x":1}')])
+    expect(argumentDeltas(events)).toEqual(['{"x":1}'])
+    const deltaIndex = events.findIndex(
+      event => event.type === 'content_block_delta',
+    )
+    const stopIndex = events.findIndex(
+      event => event.type === 'content_block_stop',
+    )
+    expect(deltaIndex).toBeLessThan(stopIndex)
+  })
+
+  test('does not invent arguments when no event carries them', async () => {
+    const events = await adapt([
+      added,
+      { type: 'response.output_item.done', output_index: 0 },
+      completed(),
+    ])
+    expect(argumentDeltas(events)).toEqual([])
+  })
+
+  test('rejects a terminal value that conflicts with streamed arguments', async () => {
+    expect(
+      adapt([
+        added,
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 0,
+          delta: '{"x":1',
+        },
+        {
+          type: 'response.function_call_arguments.done',
+          output_index: 0,
+          arguments: '{"y":1}',
+        },
+      ]),
+    ).rejects.toThrow(
+      'Responses function call arguments changed after streaming',
+    )
   })
 })

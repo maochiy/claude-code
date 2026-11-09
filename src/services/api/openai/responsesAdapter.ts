@@ -2,9 +2,92 @@ import { randomUUID } from 'crypto'
 import type { BetaRawMessageStreamEvent } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { normalizeOpenAIUsage, type AnthropicUsage } from '@ant/model-provider'
 import { getValidChatGPTAuth } from './chatgptAuth.js'
+import { sleep } from 'src/utils/sleep.js'
 
 type ResponsesInputItem = Record<string, unknown>
 type ResponsesTool = Record<string, unknown>
+export type GatewayResponsesRoute = {
+  transport: 'gateway'
+  url: string
+  apiKey: string
+}
+export type ConfiguredResponsesRoute =
+  | GatewayResponsesRoute
+  | { transport: 'chatgpt' }
+
+/** Exact native model IDs only. Reject ambiguous URLs before any credential is sent. */
+export function parseResponsesRoutes(
+  raw: string | undefined,
+): ReadonlyMap<string, ConfiguredResponsesRoute> {
+  const routes = new Map<string, ConfiguredResponsesRoute>()
+  if (raw === undefined) return routes
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('invalid routes')
+    }
+    for (const [model, value] of Object.entries(parsed)) {
+      if (!model || model.trim() !== model || model.includes('*')) {
+        throw new Error('invalid model')
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('invalid route')
+      }
+      const route = value as Record<string, unknown>
+      if (route.transport === 'chatgpt') {
+        if (Object.keys(route).length !== 1) throw new Error('invalid route')
+        routes.set(model, { transport: 'chatgpt' })
+        continue
+      }
+      if (
+        route.transport !== 'gateway' ||
+        typeof route.url !== 'string' ||
+        typeof route.apiKey !== 'string' ||
+        !route.apiKey ||
+        !/^[\x21-\x7e]+$/.test(route.apiKey) ||
+        Object.keys(route).length !== 3 ||
+        !/^https?:\/\/127\.0\.0\.1:\d{1,5}\/v1\/responses$/.test(route.url)
+      ) {
+        throw new Error('invalid route')
+      }
+      const url = new URL(route.url)
+      if (url.hostname !== '127.0.0.1' || !url.port) {
+        throw new Error('invalid endpoint')
+      }
+      routes.set(model, {
+        transport: 'gateway',
+        url: route.url,
+        apiKey: route.apiKey,
+      })
+    }
+    return routes
+  } catch {
+    // 配置可能包含密钥，错误不得回显原始 JSON、URL 或上游异常。
+    throw new Error('Invalid CLAUDE_CODE_OPENAI_RESPONSES_ROUTES configuration')
+  }
+}
+
+const configuredResponsesRoutes = (() => {
+  const raw = process.env.CLAUDE_CODE_OPENAI_RESPONSES_ROUTES
+  delete process.env.CLAUDE_CODE_OPENAI_RESPONSES_ROUTES
+  return parseResponsesRoutes(raw)
+})()
+
+export function getConfiguredResponsesRoute(
+  model: string,
+): ConfiguredResponsesRoute | undefined {
+  return configuredResponsesRoutes.get(model)
+}
+
+export function resolveConfiguredResponsesModel(
+  nativeModel: string,
+  resolveFallback: (model: string) => string,
+): string {
+  return configuredResponsesRoutes.has(nativeModel)
+    ? nativeModel
+    : resolveFallback(nativeModel)
+}
+
 export type ResponsesReasoningEffort =
   | 'low'
   | 'medium'
@@ -196,33 +279,111 @@ export function buildResponsesRequest(params: {
   }
 }
 
+function isResponsesTerminal(type: unknown): boolean {
+  return (
+    type === 'response.completed' ||
+    type === 'response.incomplete' ||
+    type === 'response.failed' ||
+    type === 'response.error' ||
+    type === 'error'
+  )
+}
+
+class ResponsesStreamInterruptedError extends Error {
+  readonly code = 'CHATGPT_STREAM_INTERRUPTED'
+
+  constructor() {
+    super('ChatGPT Responses stream interrupted before a terminal event')
+  }
+}
+
+const retryableStatuses = new Set([408, 429, 500, 502, 503, 504])
+const retryableNetworkCodes = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+])
+
+function transportDetails(error: unknown): {
+  code?: string
+  status?: number
+  network: boolean
+} {
+  let current = error
+  let code: string | undefined
+  let status: number | undefined
+  let network = false
+  const seen = new Set<unknown>()
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const record = current as Record<string, unknown>
+    if (typeof record.code === 'string') {
+      code ??= record.code
+      if (retryableNetworkCodes.has(record.code)) {
+        code = record.code
+        network = true
+      }
+    }
+    if (typeof record.status === 'number') status ??= record.status
+    current = record.cause
+  }
+  return { code, status, network }
+}
+
 async function* parseSSE(
   response: Response,
 ): AsyncGenerator<Record<string, unknown>, void> {
-  if (!response.body) throw new Error('ChatGPT response did not include a body')
+  if (!response.body) throw new ResponsesStreamInterruptedError()
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let splitAt = buffer.indexOf('\n\n')
-    while (splitAt >= 0) {
-      const frame = buffer.slice(0, splitAt)
-      buffer = buffer.slice(splitAt + 2)
-      const data = frame
-        .split(/\r?\n/)
-        .filter(line => line.startsWith('data:'))
-        .map(line => line.slice(5).trimStart())
-        .join('\n')
-      if (data && data !== '[DONE]') {
-        const parsed = JSON.parse(data) as unknown
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += done
+        ? decoder.decode()
+        : decoder.decode(value, { stream: true })
+      // Match CRLF only after a complete chunk has arrived; a trailing CR may
+      // belong to the next chunk's LF. Also process an unterminated EOF frame.
+      let separator: RegExpExecArray | null
+      while ((separator = /\r?\n\r?\n/.exec(buffer)) || (done && buffer)) {
+        const frame = separator ? buffer.slice(0, separator.index) : buffer
+        buffer = separator
+          ? buffer.slice(separator.index + separator[0].length)
+          : ''
+        const data = frame
+          .split(/\r?\n/)
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trimStart())
+          .join('\n')
+        if (!data || data === '[DONE]') continue
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(data) as unknown
+        } catch {
+          // SyntaxError messages can quote the payload. Do not retain them,
+          // even as a cause, since errors are exposed to users and logs.
+          throw Object.assign(new Error('ChatGPT Responses invalid SSE JSON'), {
+            code: 'CHATGPT_INVALID_SSE',
+          })
+        }
         if (parsed && typeof parsed === 'object') {
-          yield parsed as Record<string, unknown>
+          const event = parsed as Record<string, unknown>
+          yield event
+          if (isResponsesTerminal(event.type)) return
         }
       }
-      splitAt = buffer.indexOf('\n\n')
+      if (done) throw new ResponsesStreamInterruptedError()
+    }
+  } finally {
+    // Every read above has settled before reaching finally. Initiate cancel,
+    // but do not wait for an underlying source that may never finish cleanup.
+    // releaseLock is safe here and must not depend on that cleanup promise.
+    try {
+      void reader.cancel().catch(() => {})
+    } finally {
+      reader.releaseLock()
     }
   }
 }
@@ -279,7 +440,14 @@ export async function* adaptResponsesStreamToAnthropic(
   const messageId = `msg_${randomUUID().replace(/-/g, '').slice(0, 24)}`
   const toolBlocks = new Map<
     number,
-    { contentIndex: number; open: boolean; name: string; id: string }
+    {
+      contentIndex: number
+      open: boolean
+      name: string
+      id: string
+      arguments: string
+      argumentsFinalized: boolean
+    }
   >()
   let started = false
   let currentContentIndex = -1
@@ -307,6 +475,35 @@ export async function* adaptResponsesStreamToAnthropic(
         },
       },
     } as unknown as BetaRawMessageStreamEvent
+  }
+
+  const completeToolArguments = function* (
+    outputIndex: number,
+    fullArguments: unknown,
+  ): Generator<BetaRawMessageStreamEvent> {
+    const block = toolBlocks.get(outputIndex)
+    if (!block || typeof fullArguments !== 'string' || !fullArguments) return
+    // 终态给出完整参数；只补齐已流式发出前缀之外的部分，避免重复 JSON。
+    if (!fullArguments.startsWith(block.arguments)) {
+      throw new Error(
+        'Responses function call arguments changed after streaming',
+      )
+    }
+    const suffix = fullArguments.slice(block.arguments.length)
+    if (suffix && !block.open) {
+      throw new Error(
+        'Responses function call arguments arrived after block stop',
+      )
+    }
+    block.arguments = fullArguments
+    block.argumentsFinalized = true
+    if (suffix) {
+      yield {
+        type: 'content_block_delta',
+        index: block.contentIndex,
+        delta: { type: 'input_json_delta', partial_json: suffix },
+      } as BetaRawMessageStreamEvent
+    }
   }
 
   for await (const event of stream) {
@@ -390,6 +587,8 @@ export async function* adaptResponsesStreamToAnthropic(
           open: true,
           name,
           id,
+          arguments: '',
+          argumentsFinalized: false,
         })
         yield {
           type: 'content_block_start',
@@ -405,15 +604,24 @@ export async function* adaptResponsesStreamToAnthropic(
         typeof event.output_index === 'number' ? event.output_index : -1
       const block = toolBlocks.get(outputIndex)
       if (block) {
+        const delta = String(event.delta ?? '')
+        block.arguments += delta
         yield {
           type: 'content_block_delta',
           index: block.contentIndex,
           delta: {
             type: 'input_json_delta',
-            partial_json: String(event.delta ?? ''),
+            partial_json: delta,
           },
         } as BetaRawMessageStreamEvent
       }
+      continue
+    }
+
+    if (type === 'response.function_call_arguments.done') {
+      const outputIndex =
+        typeof event.output_index === 'number' ? event.output_index : -1
+      yield* completeToolArguments(outputIndex, event.arguments)
       continue
     }
 
@@ -422,24 +630,36 @@ export async function* adaptResponsesStreamToAnthropic(
         typeof event.output_index === 'number' ? event.output_index : -1
       const block = toolBlocks.get(outputIndex)
       if (block?.open) {
-        yield {
-          type: 'content_block_stop',
-          index: block.contentIndex,
-        } as BetaRawMessageStreamEvent
-        block.open = false
+        const item = event.item as Record<string, unknown> | undefined
+        if (item?.type === 'function_call') {
+          yield* completeToolArguments(outputIndex, item.arguments)
+        }
+        if (block.argumentsFinalized) {
+          yield {
+            type: 'content_block_stop',
+            index: block.contentIndex,
+          } as BetaRawMessageStreamEvent
+          block.open = false
+        }
       }
       continue
     }
 
-    if (type === 'response.error') {
-      const error = event.error as Record<string, unknown> | undefined
-      throw new Error(String(error?.message ?? 'ChatGPT Responses API error'))
+    if (type === 'response.error' || type === 'error') {
+      const error = (event.error ?? event) as Record<string, unknown>
+      throw Object.assign(
+        new Error(String(error.message ?? 'ChatGPT Responses API error')),
+        { code: error.code },
+      )
     }
 
     if (type === 'response.failed') {
       const response = event.response as Record<string, unknown> | undefined
       const error = response?.error as Record<string, unknown> | undefined
-      throw new Error(String(error?.message ?? 'ChatGPT Responses API failed'))
+      throw Object.assign(
+        new Error(String(error?.message ?? 'ChatGPT Responses API failed')),
+        { code: error?.code },
+      )
     }
 
     if (type === 'response.completed' || type === 'response.incomplete') {
@@ -458,6 +678,26 @@ export async function* adaptResponsesStreamToAnthropic(
         thinkingBlockOpen = false
       }
       const response = event.response as Record<string, unknown> | undefined
+      const output = response?.output
+      if (Array.isArray(output)) {
+        for (const [outputIndex, item] of output.entries()) {
+          if (item && typeof item === 'object') {
+            const record = item as Record<string, unknown>
+            if (record.type === 'function_call') {
+              yield* completeToolArguments(outputIndex, record.arguments)
+            }
+          }
+        }
+      }
+      for (const block of toolBlocks.values()) {
+        if (block.open) {
+          yield {
+            type: 'content_block_stop',
+            index: block.contentIndex,
+          } as BetaRawMessageStreamEvent
+          block.open = false
+        }
+      }
       yield {
         type: 'message_delta',
         delta: { stop_reason: mapStopReason(response), stop_sequence: null },
@@ -468,13 +708,98 @@ export async function* adaptResponsesStreamToAnthropic(
   }
 }
 
+async function createResponsesStream(params: {
+  request: ResponsesRequest
+  signal: AbortSignal
+  fetchOverride?: typeof fetch
+  url: string
+  headers: Record<string, string>
+  source: 'ChatGPT' | 'Gateway'
+}): Promise<AsyncIterable<Record<string, unknown>>> {
+  const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
+  const body = JSON.stringify(params.request)
+  return (async function* () {
+    let delivered = false
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      params.signal.throwIfAborted()
+      try {
+        const response = await fetchFn(params.url, {
+          method: 'POST',
+          headers: params.headers,
+          body,
+          signal: params.signal,
+        })
+        if (!response.ok) {
+          // Do not include upstream response bodies in errors/logs.
+          void response.body?.cancel().catch(() => {})
+          throw Object.assign(
+            new Error(
+              `${params.source} Responses API request failed (${response.status})`,
+            ),
+            { status: response.status },
+          )
+        }
+        for await (const event of parseSSE(response)) {
+          params.signal.throwIfAborted()
+          // Even metadata/tool fragments prohibit replay of this request.
+          delivered = true
+          yield event
+        }
+        return
+      } catch (error) {
+        if (params.signal.aborted) throw error
+        const details = transportDetails(error)
+        const aborted = error instanceof Error && error.name === 'AbortError'
+        const fetchNetworkError =
+          error instanceof TypeError &&
+          /fetch failed|failed to fetch|network|load failed/i.test(
+            error.message,
+          )
+        const retryable =
+          (!aborted || details.network) &&
+          (details.network ||
+            fetchNetworkError ||
+            (details.status !== undefined &&
+              retryableStatuses.has(details.status)) ||
+            error instanceof ResponsesStreamInterruptedError)
+        if (!delivered && retryable && attempt < 3) {
+          await sleep(attempt * 1000, params.signal)
+          params.signal.throwIfAborted()
+          continue
+        }
+        if (aborted && !details.network) throw error
+        const diagnostic = details.code
+          ? `code ${details.code}`
+          : details.status !== undefined
+            ? `HTTP ${details.status}`
+            : error instanceof Error
+              ? error.message
+              : 'unknown transport error'
+        const boundary = delivered
+          ? 'stream interrupted after an event; request not replayed'
+          : retryable
+            ? `retries exhausted after ${attempt} attempts`
+            : 'request failed'
+        throw Object.assign(
+          new Error(
+            !delivered && !retryable && details.status !== undefined
+              ? `${params.source} Responses API request failed (${details.status})`
+              : `${params.source} Responses ${boundary} (${diagnostic})`,
+            { cause: error },
+          ),
+          { code: details.code, status: details.status },
+        )
+      }
+    }
+  })()
+}
+
 export async function createChatGPTResponsesStream(params: {
   request: ResponsesRequest
   signal: AbortSignal
   fetchOverride?: typeof fetch
 }): Promise<AsyncIterable<Record<string, unknown>>> {
   const auth = await getValidChatGPTAuth()
-  const fetchFn = params.fetchOverride ?? (globalThis.fetch as typeof fetch)
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.accessToken}`,
     'Content-Type': 'application/json',
@@ -484,23 +809,30 @@ export async function createChatGPTResponsesStream(params: {
     Referer: 'https://chatgpt.com/',
     originator: 'claude-code-best',
   }
-  if (auth.accountId) {
-    headers['ChatGPT-Account-Id'] = auth.accountId
-  }
-  const response = await fetchFn(
-    'https://chatgpt.com/backend-api/codex/responses',
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params.request),
-      signal: params.signal,
+  if (auth.accountId) headers['ChatGPT-Account-Id'] = auth.accountId
+  return createResponsesStream({
+    ...params,
+    url: 'https://chatgpt.com/backend-api/codex/responses',
+    headers,
+    source: 'ChatGPT',
+  })
+}
+
+export function createGatewayResponsesStream(params: {
+  route: GatewayResponsesRoute
+  request: ResponsesRequest
+  signal: AbortSignal
+  fetchOverride?: typeof fetch
+}): Promise<AsyncIterable<Record<string, unknown>>> {
+  const { route, ...requestParams } = params
+  return createResponsesStream({
+    ...requestParams,
+    url: route.url,
+    headers: {
+      Authorization: `Bearer ${route.apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
     },
-  )
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(
-      `ChatGPT Responses API request failed (${response.status})${text ? `: ${text.slice(0, 500)}` : ''}`,
-    )
-  }
-  return parseSSE(response)
+    source: 'Gateway',
+  })
 }
