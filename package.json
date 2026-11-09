@@ -1,6 +1,6 @@
 {
   "name": "claude-code-best",
-  "version": "2.8.22",
+  "version": "2.8.29",
   "description": "Reverse-engineered Anthropic Claude Code CLI — interactive AI coding assistant in the terminal",
   "type": "module",
   "author": "claude-code-best <claude-code-best@proton.me>",
@@ -26,6 +26,7 @@
   },
   "bin": {
     "ccx": "dist/cli-node.js",
+    "ccx-tui": "dist/tui/cli.js",
     "ccb-bun": "dist/cli-bun.js",
     "claude-code-best": "dist/cli-node.js"
   },
@@ -47,7 +48,11 @@
     "build:bun": "bun run build.ts",
     "dev": "bun run scripts/dev.ts",
     "dev:inspect": "bun run scripts/dev-debug.ts",
-    "prepublishOnly": "bun run build:vite",
+    "tui": "bun run tui:build && bun dist/tui/cli.js",
+    "tui:build": "bun run packages/opentui-solid-spike/build-cli.ts",
+    "test:tui-package": "bun run scripts/verify-tui-package-artifact.ts",
+    "test:tui-pty": "bun run --cwd packages/opentui-solid-spike build && bun test --timeout 30000 ./packages/opentui-solid-spike/tests/pty/acceptance.case.ts",
+    "prepublishOnly": "bun run build:vite && bun run tui:build",
     "lint": "biome lint .",
     "lint:fix": "biome lint --fix .",
     "format": "biome format --write .",
@@ -71,7 +76,12 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.0",
     "@claude-code-best/mcp-chrome-bridge": "^3.0.1",
+    "@opentui/core": "0.5.11",
+    "@opentui/solid": "0.5.11",
     "highlight.js": "^11.11.1",
+    "node-fetch": "^3.3.2",
+    "solid-js": "1.9.12",
+    "web-tree-sitter": "0.25.10",
     "ws": "^8.20.0"
   },
   "devDependencies": {
