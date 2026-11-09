@@ -590,6 +590,97 @@ describe('thinking support (reasoning_content)', () => {
     expect(thinkingDeltas[0].index).toBe(1)
     expect(thinkingDeltas[0].delta.thinking).toBe('inner thought')
   })
+
+  test('does not split text when every chunk carries empty reasoning_content', async () => {
+    // Some OpenAI-compatible gateways (e.g. vLLM-style proxies) attach
+    // `reasoning_content: ''` to every chunk, including pure text chunks.
+    // Treating each of those as "open a thinking block" closes the text block
+    // on every delta, so the answer ends up as one text block per chunk and
+    // the UI renders it one line at a time.
+    const events = await collectEvents([
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: '', content: 'Now' },
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: '', content: ' let me look at' },
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: '', content: ' the iOS code.' },
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }),
+    ])
+
+    const blockStarts = events.filter(
+      e => e.type === 'content_block_start',
+    ) as any[]
+    // One empty thinking block (DeepSeek round-trip) + a single text block.
+    expect(blockStarts.length).toBe(2)
+    expect(blockStarts[0].content_block.type).toBe('thinking')
+    expect(blockStarts[1].content_block.type).toBe('text')
+
+    const textDeltas = events.filter(
+      e => e.type === 'content_block_delta' && e.delta.type === 'text_delta',
+    ) as any[]
+    expect(textDeltas.length).toBe(3)
+    // All text deltas stay inside the same (index 1) block.
+    expect(textDeltas.every(d => d.index === 1)).toBe(true)
+    expect(textDeltas.map(d => d.delta.text).join('')).toBe(
+      'Now let me look at the iOS code.',
+    )
+  })
+
+  test('ignores empty reasoning_content that arrives after text has started', async () => {
+    const events = await collectEvents([
+      makeChunk({
+        choices: [
+          { index: 0, delta: { content: 'Hello' }, finish_reason: null },
+        ],
+      }),
+      makeChunk({
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: '', content: ' world' },
+            finish_reason: null,
+          },
+        ],
+      }),
+      makeChunk({
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      }),
+    ])
+
+    const blockStarts = events.filter(
+      e => e.type === 'content_block_start',
+    ) as any[]
+    expect(blockStarts.length).toBe(1)
+    expect(blockStarts[0].content_block.type).toBe('text')
+
+    const textDeltas = events.filter(
+      e => e.type === 'content_block_delta' && e.delta.type === 'text_delta',
+    ) as any[]
+    expect(textDeltas.map(d => d.delta.text).join('')).toBe('Hello world')
+  })
 })
 
 describe('prompt caching support', () => {

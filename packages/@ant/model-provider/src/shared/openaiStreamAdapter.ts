@@ -55,6 +55,11 @@ export async function* adaptOpenAIStreamToAnthropic(
   // Track text block state
   let textBlockOpen = false
 
+  // Whether any content block has started yet. Used to distinguish a genuine
+  // empty reasoning burst (DeepSeek v4 direct-answer) from gateways that put
+  // `reasoning_content: ''` on every single chunk alongside text deltas.
+  let sawContentBlock = false
+
   // Track raw OpenAI usage across chunks. The normalized Anthropic fields are
   // disjoint: ordinary input + cache reads + cache writes = total input.
   let rawInputTokens = 0
@@ -135,9 +140,18 @@ export async function* adaptOpenAIStreamToAnthropic(
     // returns reasoning_content: "" when the model answers directly. The
     // empty thinking block must round-trip back to the API in subsequent
     // requests, otherwise DeepSeek rejects with 400.
+    //
+    // But many OpenAI-compatible gateways (vLLM-style proxies, some relay
+    // services) include `reasoning_content: ''` on EVERY chunk, including the
+    // ones that only carry `content`. Opening a thinking block for those would
+    // close the open text block chunk by chunk and split the answer into one
+    // text block per delta. So an empty reasoning value only opens a block at
+    // the very start of the response, before any other block exists.
     const reasoningContent = (delta as any).reasoning_content
     if (reasoningContent != null) {
-      if (!thinkingBlockOpen) {
+      const shouldOpenThinking = reasoningContent !== '' || !sawContentBlock
+
+      if (shouldOpenThinking && !thinkingBlockOpen) {
         // Close an open text block first. Some gateways emit a second reasoning
         // phase AFTER text has already started. Without this, textBlockOpen
         // stays true while currentContentIndex advances to the new thinking
@@ -154,6 +168,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
         currentContentIndex++
         thinkingBlockOpen = true
+        sawContentBlock = true
         openBlockIndices.add(currentContentIndex)
 
         yield {
@@ -167,7 +182,7 @@ export async function* adaptOpenAIStreamToAnthropic(
         } as BetaRawMessageStreamEvent
       }
 
-      if (reasoningContent !== '') {
+      if (thinkingBlockOpen && reasoningContent !== '') {
         yield {
           type: 'content_block_delta',
           index: currentContentIndex,
@@ -194,6 +209,7 @@ export async function* adaptOpenAIStreamToAnthropic(
 
         currentContentIndex++
         textBlockOpen = true
+        sawContentBlock = true
         openBlockIndices.add(currentContentIndex)
 
         yield {
@@ -254,6 +270,7 @@ export async function* adaptOpenAIStreamToAnthropic(
             name: toolName,
             arguments: '',
           })
+          sawContentBlock = true
           openBlockIndices.add(currentContentIndex)
 
           yield {
