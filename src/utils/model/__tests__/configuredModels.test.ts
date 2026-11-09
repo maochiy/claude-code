@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  getMainLoopModelOverride,
+  setMainLoopModelOverride,
+} from '../../../bootstrap/state.js'
+import { getAgentModel } from '../agent.js'
 import { getContextWindowForModel } from '../../context.js'
 import {
   modelSupportsEffort,
@@ -15,15 +20,20 @@ import {
   resolveConfiguredDefaultModelId,
 } from '../configuredModels.js'
 import {
+  getMainLoopModel,
   getDefaultHaikuModel,
   getDefaultOpusModel,
   getDefaultSonnetModel,
+  modelDisplayString,
   parseUserSpecifiedModel,
+  renderModelName,
 } from '../model.js'
 import { getModelOptions } from '../modelOptions.js'
 import { resolveProviderModelId } from '../providerModel.js'
 
 const savedEnv = {
+  CLAUDE_CODE_SUBAGENT_MODEL: process.env.CLAUDE_CODE_SUBAGENT_MODEL,
+  OPENAI_AUTH_MODE: process.env.OPENAI_AUTH_MODE,
   CLAUDE_CODE_USE_OPENAI: process.env.CLAUDE_CODE_USE_OPENAI,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   OPENAI_DEFAULT_HAIKU_MODEL: process.env.OPENAI_DEFAULT_HAIKU_MODEL,
@@ -42,6 +52,8 @@ function setSettings(settings: Record<string, unknown>): void {
 describe('configured model catalog', () => {
   beforeEach(() => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+    delete process.env.OPENAI_AUTH_MODE
     delete process.env.OPENAI_MODEL
     delete process.env.OPENAI_DEFAULT_HAIKU_MODEL
     delete process.env.OPENAI_DEFAULT_SONNET_MODEL
@@ -55,6 +67,91 @@ describe('configured model catalog', () => {
       else process.env[key] = value
     }
     setSettings({})
+  })
+
+  test('keeps a session model override when shared settings change', () => {
+    const previous = getMainLoopModelOverride()
+    try {
+      setSettings({ modelType: 'openai', model: 'glm-5.3-flashx' })
+      setMainLoopModelOverride('gpt-6.1-sol')
+      setSettings({ modelType: 'openai', model: 'another-session-model' })
+      expect(getMainLoopModel()).toBe('gpt-6.1-sol')
+      expect(getAgentModel('inherit', getMainLoopModel())).toBe('gpt-6.1-sol')
+    } finally {
+      setMainLoopModelOverride(previous)
+    }
+  })
+
+  test('pins the initial saved model across shared settings reloads', () => {
+    const previous = getMainLoopModelOverride()
+    try {
+      setMainLoopModelOverride(undefined)
+      setSettings({ modelType: 'openai', model: 'gpt-6.1-sol' })
+      expect(getMainLoopModel()).toBe('gpt-6.1-sol')
+      setSettings({ modelType: 'openai', model: 'glm-5.3-flashx' })
+      expect(getMainLoopModel()).toBe('gpt-6.1-sol')
+    } finally {
+      setMainLoopModelOverride(previous)
+    }
+  })
+
+  test('pins the concrete model when a configured alias changes', () => {
+    const previous = getMainLoopModelOverride()
+    try {
+      setMainLoopModelOverride(undefined)
+      setSettings({
+        modelType: 'openai',
+        model: 'opus',
+        models: [{ id: 'gpt-first' }],
+      })
+      expect(getMainLoopModel()).toBe('gpt-first')
+      setSettings({
+        modelType: 'openai',
+        model: 'opus',
+        models: [{ id: 'gpt-second' }],
+      })
+      expect(getMainLoopModel()).toBe('gpt-first')
+    } finally {
+      setMainLoopModelOverride(previous)
+    }
+  })
+
+  test('does not replace an explicit session or agent model with OPENAI_MODEL', () => {
+    process.env.OPENAI_MODEL = 'glm-5.3-flashx'
+    expect(resolveProviderModelId('gpt-6.1-sol', 'openai')).toBe('gpt-6.1-sol')
+    expect(resolveProviderModelId('gpt-5.6-luna', 'openai')).toBe(
+      'gpt-5.6-luna',
+    )
+  })
+
+  test('rejects stale GLM configuration before the Codex OAuth request', () => {
+    const previous = process.env.OPENAI_AUTH_MODE
+    try {
+      process.env.OPENAI_AUTH_MODE = 'chatgpt'
+      process.env.OPENAI_MODEL = 'glm-5.3-flashx'
+      setSettings({
+        modelType: 'openai',
+        models: [{ id: 'glm-5.3-flashx' }],
+      })
+      expect(() => resolveProviderModelId('glm-5.3-flashx', 'openai')).toThrow(
+        'ChatGPT OAuth cannot use model',
+      )
+      expect(resolveProviderModelId('gpt-6.1-sol', 'openai')).toBe(
+        'gpt-6.1-sol',
+      )
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'glm-5.3-flashx'
+      const agentModel = getAgentModel('inherit', 'gpt-6.1-sol')
+      expect(agentModel).toBe('glm-5.3-flashx')
+      expect(() => resolveProviderModelId(agentModel, 'openai')).toThrow(
+        'CLAUDE_CODE_SUBAGENT_MODEL',
+      )
+      expect(resolveProviderModelId('gpt-future-model', 'openai')).toBe(
+        'gpt-future-model',
+      )
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_AUTH_MODE
+      else process.env.OPENAI_AUTH_MODE = previous
+    }
   })
 
   test('normalizes legacy 1m suffix and deduplicates model IDs', () => {
@@ -175,5 +272,45 @@ describe('configured model catalog', () => {
     expect(resolveProviderModelId('claude-proxy-opus-custom', 'openai')).toBe(
       'claude-proxy-opus-custom',
     )
+  })
+})
+
+describe('renderModelName with configured model catalog', () => {
+  beforeEach(() => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    delete process.env.OPENAI_MODEL
+    setSettings({})
+  })
+
+  afterEach(() => {
+    setSettings({})
+  })
+
+  test('Given a configured model with name, when rendering, then the name is shown instead of the id', () => {
+    setSettings({
+      models: [
+        { id: 'zmn/zmn-flash', name: 'glm-5.3-flash', contextWindow: 1000000 },
+      ],
+    })
+    expect(renderModelName('zmn/zmn-flash')).toBe('glm-5.3-flash')
+  })
+
+  test('Given a configured model without name, when rendering, then the id is shown', () => {
+    setSettings({
+      models: [{ id: 'zmn/zmn-flash' }],
+    })
+    expect(renderModelName('zmn/zmn-flash')).toBe('zmn/zmn-flash')
+  })
+
+  test('Given no configured catalog, when rendering an unknown model, then the id is shown', () => {
+    setSettings({})
+    expect(renderModelName('zmn/zmn-flash')).toBe('zmn/zmn-flash')
+  })
+
+  test('modelDisplayString prefers the configured name for the resolved model', () => {
+    setSettings({
+      models: [{ id: 'zmn/zmn-flash', name: 'glm-5.3-flash' }],
+    })
+    expect(modelDisplayString('zmn/zmn-flash')).toBe('glm-5.3-flash')
   })
 })

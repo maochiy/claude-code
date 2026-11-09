@@ -5,7 +5,10 @@
  * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
  * during dead code elimination
  */
-import { getMainLoopModelOverride } from '../../bootstrap/state.js'
+import {
+  getMainLoopModelOverride,
+  setMainLoopModelOverride,
+} from '../../bootstrap/state.js'
 import { resolveAntModel, getAntModelOverrideConfig } from './antModels.js'
 import {
   getSubscriptionType,
@@ -155,10 +158,16 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
  */
 export function getMainLoopModel(): ModelName {
   const model = getUserSpecifiedModelSetting()
-  if (model !== undefined && model !== null) {
-    return parseUserSpecifiedModel(model)
+  const resolved =
+    model !== undefined && model !== null
+      ? parseUserSpecifiedModel(model)
+      : getDefaultMainLoopModel()
+  // Pin the concrete launch model so a later catalog/settings refresh cannot
+  // resolve the same alias to another model in this running session.
+  if (getMainLoopModelOverride() === undefined) {
+    setMainLoopModelOverride(resolved)
   }
-  return getDefaultMainLoopModel()
+  return resolved
 }
 
 export function getBestModel(): ModelName {
@@ -529,6 +538,15 @@ function maskModelCodename(baseName: string): string {
   return [masked, ...rest].join('-')
 }
 
+/**
+ * 用户在 settings（providers/models 目录）中为自定义模型配置的展示名。
+ * 未配置目录或该模型没有 name 时返回 null。
+ */
+function getConfiguredModelDisplayName(model: ModelName): string | null {
+  if (!hasConfiguredModelCatalog()) return null
+  return getConfiguredModel(model)?.name ?? null
+}
+
 export function renderModelName(model: ModelName): string {
   const publicName = getPublicModelDisplayName(model)
   if (publicName) {
@@ -547,6 +565,10 @@ export function renderModelName(model: ModelName): string {
       return `${model} (${resolved})`
     }
     return resolved
+  }
+  const configuredName = getConfiguredModelDisplayName(model)
+  if (configuredName) {
+    return configuredName
   }
   return model
 }
@@ -707,7 +729,10 @@ export function modelDisplayString(model: ModelSetting): string {
     return `Default (${getDefaultMainLoopModel()})`
   }
   const resolvedModel = parseUserSpecifiedModel(model)
-  return model === resolvedModel ? resolvedModel : `${model} (${resolvedModel})`
+  if (model === resolvedModel) {
+    return getConfiguredModelDisplayName(resolvedModel) ?? resolvedModel
+  }
+  return `${model} (${resolvedModel})`
 }
 
 // @[MODEL LAUNCH]: Add a marketing name mapping for the new model below.
