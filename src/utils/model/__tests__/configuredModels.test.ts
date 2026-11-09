@@ -18,7 +18,9 @@ import {
   getDefaultHaikuModel,
   getDefaultOpusModel,
   getDefaultSonnetModel,
+  modelDisplayString,
   parseUserSpecifiedModel,
+  renderModelName,
 } from '../model.js'
 import { getModelOptions } from '../modelOptions.js'
 import { resolveProviderModelId } from '../providerModel.js'
@@ -175,5 +177,45 @@ describe('configured model catalog', () => {
     expect(resolveProviderModelId('claude-proxy-opus-custom', 'openai')).toBe(
       'claude-proxy-opus-custom',
     )
+  })
+})
+
+describe('renderModelName with configured model catalog', () => {
+  beforeEach(() => {
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    delete process.env.OPENAI_MODEL
+    setSettings({})
+  })
+
+  afterEach(() => {
+    setSettings({})
+  })
+
+  test('Given a configured model with name, when rendering, then the name is shown instead of the id', () => {
+    setSettings({
+      models: [
+        { id: 'zmn/zmn-flash', name: 'glm-5.3-flash', contextWindow: 1000000 },
+      ],
+    })
+    expect(renderModelName('zmn/zmn-flash')).toBe('glm-5.3-flash')
+  })
+
+  test('Given a configured model without name, when rendering, then the id is shown', () => {
+    setSettings({
+      models: [{ id: 'zmn/zmn-flash' }],
+    })
+    expect(renderModelName('zmn/zmn-flash')).toBe('zmn/zmn-flash')
+  })
+
+  test('Given no configured catalog, when rendering an unknown model, then the id is shown', () => {
+    setSettings({})
+    expect(renderModelName('zmn/zmn-flash')).toBe('zmn/zmn-flash')
+  })
+
+  test('modelDisplayString prefers the configured name for the resolved model', () => {
+    setSettings({
+      models: [{ id: 'zmn/zmn-flash', name: 'glm-5.3-flash' }],
+    })
+    expect(modelDisplayString('zmn/zmn-flash')).toBe('glm-5.3-flash')
   })
 })

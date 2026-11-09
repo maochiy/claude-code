@@ -24,7 +24,11 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+  type APIProvider,
+} from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
@@ -74,8 +78,8 @@ function getOpenAIModelForTier(
   })
 }
 
-export function getSmallFastModel(): ModelName {
-  const provider = getAPIProvider()
+export function getSmallFastModel(apiProvider?: APIProvider): ModelName {
+  const provider = apiProvider ?? getAPIProvider()
   if (provider === 'openai' && isChatGPTAuthMode()) {
     const chatGPTModel = resolveChatGPTCodexModelForTier({
       tier: 'haiku',
@@ -97,7 +101,9 @@ export function getSmallFastModel(): ModelName {
     return process.env.GEMINI_SMALL_FAST_MODEL
   }
   // Anthropic-specific or fallback
-  return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
+  return (
+    process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel(provider)
+  )
 }
 
 export function isNonCustomOpusModel(model: ModelName): boolean {
@@ -170,8 +176,10 @@ export function getBestModel(): ModelName {
  * Returns undefined for providers that don't have a primary-model env var
  * (Bedrock, Vertex, Foundry, firstParty).
  */
-function getProviderPrimaryModel(): ModelName | undefined {
-  const provider = getAPIProvider()
+function getProviderPrimaryModel(
+  apiProvider?: APIProvider,
+): ModelName | undefined {
+  const provider = apiProvider ?? getAPIProvider()
   if (provider === 'openai') return process.env.OPENAI_MODEL
   if (provider === 'gemini') return process.env.GEMINI_MODEL
   if (provider === 'grok') return process.env.GROK_MODEL
@@ -179,8 +187,8 @@ function getProviderPrimaryModel(): ModelName | undefined {
 }
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
-export function getDefaultOpusModel(): ModelName {
-  const provider = getAPIProvider()
+export function getDefaultOpusModel(apiProvider?: APIProvider): ModelName {
+  const provider = apiProvider ?? getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'opus')
   if (openAIModel) return openAIModel
   const configuredDefault = getActiveConfiguredModelId()
@@ -199,7 +207,7 @@ export function getDefaultOpusModel(): ModelName {
   // fall back to it instead of a hardcoded Anthropic model. This prevents
   // sideQuery / background tasks from sending requests to Anthropic's API
   // when the user configured a third-party provider.
-  const primaryModel = getProviderPrimaryModel()
+  const primaryModel = getProviderPrimaryModel(provider)
   if (primaryModel) return primaryModel
   if (provider !== 'firstParty') {
     return getModelStrings().opus47
@@ -208,8 +216,8 @@ export function getDefaultOpusModel(): ModelName {
 }
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
-export function getDefaultSonnetModel(): ModelName {
-  const provider = getAPIProvider()
+export function getDefaultSonnetModel(apiProvider?: APIProvider): ModelName {
+  const provider = apiProvider ?? getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'sonnet')
   if (openAIModel) return openAIModel
   const configuredDefault = getActiveConfiguredModelId()
@@ -227,7 +235,7 @@ export function getDefaultSonnetModel(): ModelName {
   // 3P providers: fall back to user's primary model instead of a hardcoded
   // Anthropic model name. Prevents background API calls from being routed to
   // Anthropic when the user configured a third-party endpoint.
-  const primaryModel = getProviderPrimaryModel()
+  const primaryModel = getProviderPrimaryModel(provider)
   if (primaryModel) return primaryModel
   if (provider !== 'firstParty') {
     return getModelStrings().sonnet45
@@ -236,8 +244,8 @@ export function getDefaultSonnetModel(): ModelName {
 }
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
-export function getDefaultHaikuModel(): ModelName {
-  const provider = getAPIProvider()
+export function getDefaultHaikuModel(apiProvider?: APIProvider): ModelName {
+  const provider = apiProvider ?? getAPIProvider()
   const openAIModel = getOpenAIModelForTier(provider, 'haiku')
   if (openAIModel) return openAIModel
   const configuredDefault = getActiveConfiguredModelId()
@@ -254,7 +262,7 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // 3P providers: fall back to user's primary model instead of a hardcoded
   // Anthropic model name.
-  const primaryModel = getProviderPrimaryModel()
+  const primaryModel = getProviderPrimaryModel(provider)
   if (primaryModel) return primaryModel
 
   // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
@@ -529,6 +537,15 @@ function maskModelCodename(baseName: string): string {
   return [masked, ...rest].join('-')
 }
 
+/**
+ * 用户在 settings（providers/models 目录）中为自定义模型配置的展示名。
+ * 未配置目录或该模型没有 name 时返回 null。
+ */
+function getConfiguredModelDisplayName(model: ModelName): string | null {
+  if (!hasConfiguredModelCatalog()) return null
+  return getConfiguredModel(model)?.name ?? null
+}
+
 export function renderModelName(model: ModelName): string {
   const publicName = getPublicModelDisplayName(model)
   if (publicName) {
@@ -547,6 +564,10 @@ export function renderModelName(model: ModelName): string {
       return `${model} (${resolved})`
     }
     return resolved
+  }
+  const configuredName = getConfiguredModelDisplayName(model)
+  if (configuredName) {
+    return configuredName
   }
   return model
 }
@@ -707,7 +728,10 @@ export function modelDisplayString(model: ModelSetting): string {
     return `Default (${getDefaultMainLoopModel()})`
   }
   const resolvedModel = parseUserSpecifiedModel(model)
-  return model === resolvedModel ? resolvedModel : `${model} (${resolvedModel})`
+  if (model === resolvedModel) {
+    return getConfiguredModelDisplayName(resolvedModel) ?? resolvedModel
+  }
+  return `${model} (${resolvedModel})`
 }
 
 // @[MODEL LAUNCH]: Add a marketing name mapping for the new model below.
